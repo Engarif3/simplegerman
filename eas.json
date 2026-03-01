@@ -7,13 +7,13 @@
     "preview": {
       "android": {
         "buildType": "apk",
-        "node": "20.12.0"
+        "node": "20.19.4"
       }
     },
     "production": {
       "android": {
         "buildType": "app-bundle",
-        "node": "20.12.0"
+        "node": "20.19.4"
       }
     }
   },
