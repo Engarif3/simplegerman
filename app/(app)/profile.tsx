@@ -8,7 +8,6 @@ import {
   Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { Container } from "../../src/components/Container";
 import { useAuth } from "../../src/hooks/useAppHooks";
 import { logout } from "../../src/redux/authSlice";
 
