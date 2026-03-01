@@ -7,7 +7,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useAppDispatch, useAppSelector } from "../../../src/hooks/useAppHooks";
 import { fetchWord } from "../../../src/redux/wordsSlice";
@@ -16,9 +16,16 @@ export default function WordDetailScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const dispatch = useAppDispatch();
+  const navigation = useNavigation();
   const { currentWord, isLoading, error } = useAppSelector(
     (state) => state.words,
   );
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerShown: false,
+    });
+  }, [navigation]);
 
   useEffect(() => {
     if (id) {

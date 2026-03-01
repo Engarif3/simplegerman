@@ -33,6 +33,21 @@ export default function AppLayout() {
           ),
         }}
       />
+
+         <Tabs.Screen
+        name="vocabulary"
+        options={{
+          title: "Vocabulary",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="library-outline"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+
       <Tabs.Screen
         name="stories"
         options={{
@@ -46,19 +61,7 @@ export default function AppLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="vocabulary"
-        options={{
-          title: "Vocabulary",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="library-outline"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
+   
       <Tabs.Screen
         name="profile"
         options={{
@@ -72,17 +75,19 @@ export default function AppLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="story/[id]"
-        options={{
-          href: null,
-        }}
+      <Tabs.Screen 
+        name="story/[id]" 
+        options={{ 
+          headerShown: false,
+          href: null 
+        }} 
       />
-      <Tabs.Screen
-        name="word/[id]"
-        options={{
-          href: null,
-        }}
+      <Tabs.Screen 
+        name="word/[id]" 
+        options={{ 
+          headerShown: false,
+          href: null 
+        }} 
       />
     </Tabs>
   );

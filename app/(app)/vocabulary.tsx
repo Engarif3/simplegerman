@@ -153,8 +153,14 @@ export default function VocabularyScreen() {
       // Get unique levels - following React JS pattern
       const uniqueLevels: any = {};
       allWords.forEach((w) => {
-        if (w.level && w.level.level) {
-          const levelValue = w.level.level;
+        if (
+          w.level &&
+          w.level.level &&
+          w.level.level.trim() &&
+          w.level.level.toLowerCase() !== "unknown" &&
+          w.level.level.toLowerCase() !== "null"
+        ) {
+          const levelValue = w.level.level.trim();
           if (!uniqueLevels[levelValue]) {
             uniqueLevels[levelValue] = {
               id: w.level.id,
@@ -711,7 +717,7 @@ export default function VocabularyScreen() {
                   ]}
                   numberOfLines={1}
                 >
-                  {isRevealed ? meaning : "?????"}
+                  {isRevealed ? meaning : "Click to reveal"}
                 </Text>
               </TouchableOpacity>
             ) : (
@@ -759,10 +765,9 @@ export default function VocabularyScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.headerLabel}>📚 Learn Vocabulary</Text>
-          <Text style={styles.headerTitle}>Vocabulary Library</Text>
+          <Text style={styles.headerTitle}>📚 Vocabulary</Text>
           <Text style={styles.headerSubtitle}>
-            Explore and master German vocabulary with interactive learning tools
+            Master German vocabulary
           </Text>
         </View>
 
@@ -875,31 +880,31 @@ export default function VocabularyScreen() {
                 </TouchableOpacity>
                 {levels && levels.length > 0 ? (
                   levels.map((level, idx) => (
-                    <TouchableOpacity
-                      key={idx}
-                      style={styles.dropdownOption}
-                      onPress={() => {
-                        console.log(
-                          "[Vocabulary] Selected level:",
-                          level.level,
-                        );
-                        setSelectedLevel(level.level); // Use level.level (not level.name)
-                        setSelectedTopic(""); // Reset topic when level changes
-                        setShowLevelDropdown(false);
-                        setCurrentPage(1);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.dropdownOptionText,
-                          selectedLevel === level.level &&
-                            styles.dropdownOptionTextActive,
-                        ]}
+                      <TouchableOpacity
+                        key={idx}
+                        style={styles.dropdownOption}
+                        onPress={() => {
+                          console.log(
+                            "[Vocabulary] Selected level:",
+                            level.level,
+                          );
+                          setSelectedLevel(level.level); // Use level.level (not level.name)
+                          setSelectedTopic(""); // Reset topic when level changes
+                          setShowLevelDropdown(false);
+                          setCurrentPage(1);
+                        }}
                       >
-                        {level.level}
-                      </Text>
-                    </TouchableOpacity>
-                  ))
+                        <Text
+                          style={[
+                            styles.dropdownOptionText,
+                            selectedLevel === level.level &&
+                              styles.dropdownOptionTextActive,
+                          ]}
+                        >
+                          {level.level}
+                        </Text>
+                      </TouchableOpacity>
+                    ))
                 ) : (
                   <Text style={styles.dropdownOptionText}>
                     No levels available
@@ -1173,27 +1178,21 @@ const styles = StyleSheet.create({
   // Header
   header: {
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 10,
     backgroundColor: "#F5F5F5",
     borderBottomWidth: 1,
     borderBottomColor: "#EEE",
   },
-  headerLabel: {
-    fontSize: 11,
-    color: "#FF6B6B",
-    fontWeight: "700",
-    marginBottom: 4,
-  },
   headerTitle: {
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 18,
+    fontWeight: "700",
     color: "#333",
-    marginBottom: 4,
+    marginBottom: 2,
   },
   headerSubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     color: "#666",
-    lineHeight: 16,
+    lineHeight: 14,
   },
 
   // Search Type Row

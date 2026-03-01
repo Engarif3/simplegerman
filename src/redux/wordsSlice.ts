@@ -129,10 +129,12 @@ const wordsSlice = createSlice({
       })
       .addCase(fetchAllWords.fulfilled, (state, action) => {
         state.isLoading = false;
-        const words = action.payload as WordVocab[];
-        state.allWords = words;
+        const payload = action.payload as any;
+        state.allWords = payload?.words || payload || [];
+        state.levels = payload?.levels || [];
         console.log("[wordsSlice.fetchAllWords.fulfilled]", {
-          wordsCount: words.length,
+          wordsCount: state.allWords.length,
+          levelsCount: state.levels.length,
         });
       })
       .addCase(fetchAllWords.rejected, (state, action) => {
