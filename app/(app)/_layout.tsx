@@ -72,6 +72,18 @@ export default function AppLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="story/[id]"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="word/[id]"
+        options={{
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }
