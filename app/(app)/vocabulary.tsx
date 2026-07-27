@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -14,38 +14,106 @@ import { useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAppDispatch, useAppSelector } from "../../src/hooks/useAppHooks";
-import { fetchWords, fetchAllWords } from "../../src/redux/wordsSlice";
+import { fetchWords } from "../../src/redux/wordsSlice";
+import { useDebounce } from "../../src/hooks/useDebounce";
 import { favoriteService } from "../../src/services/favoriteService";
 import { authService } from "../../src/services/authService";
-import type { WordVocab } from "../../src/services/wordService";
+import {
+  partOfSpeechService,
+  PartOfSpeech,
+} from "../../src/services/partOfSpeechService";
+import {
+  wordService,
+  type WordVocab,
+  type WordSuggestion,
+} from "../../src/services/wordService";
 import WordDetailModal from "../../src/components/WordDetailModal";
+import WordTableRow from "../../src/components/WordTableRow";
+import WordTableHeader from "../../src/components/WordTableHeader";
+import { useTheme } from "../../src/context/ThemeContext";
 
 const WORDS_PER_PAGE = 40;
+
+type SubFilterOption = { value: string; label: string; description: string };
+
+const VERB_SUB_FILTERS: SubFilterOption[] = [
+  { value: "modal", label: "Modal Verbs", description: "können, müssen, wollen" },
+  { value: "separable", label: "Separable Verbs", description: "aufstehen, ankommen" },
+  { value: "reflexive", label: "Reflexive Verbs", description: "sich waschen, sich freuen" },
+  { value: "dative", label: "Dative Case", description: "danken dir, helfen mir" },
+  { value: "prepositional", label: "Prepositional Verbs", description: "denken an, warten auf" },
+  { value: "irregular", label: "Irregular (Strong) Verbs", description: "gehen, sehen, sein" },
+];
+
+const PREPOSITION_SUB_FILTERS: SubFilterOption[] = [
+  { value: "accusative", label: "Accusative", description: "durch, für, gegen, ohne" },
+  { value: "dative", label: "Dative", description: "aus, bei, mit, nach" },
+  { value: "genitive", label: "Genitive", description: "während, wegen, trotz" },
+  { value: "wechsel", label: "Changeable (Acc./Dat.)", description: "an, auf, in, über" },
+];
+
+const ADJECTIVE_SUB_FILTERS: SubFilterOption[] = [
+  { value: "prepositional", label: "Prepositional Adjectives", description: "abhängig von, interessiert an" },
+];
 
 export default function VocabularyScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
-  const { words, allWords, isLoading } = useAppSelector((state) => state.words);
+  const { words, levels, topics, total, totalPages, isLoading } =
+    useAppSelector((state) => state.words);
   const { user } = useAppSelector((state) => state.auth);
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const iconMuted = isDark ? "#94A3B8" : "#666";
 
   // State Management
   const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const [searchType, setSearchType] = useState<"word" | "meaning">("word");
+
+  // "Did you mean" typo suggestions (mirrors web's WordList.jsx). This runs
+  // its own faster, independent debounce so it never slows down or gets
+  // entangled with the 300ms table-search debounce above.
+  const debouncedSuggestionQuery = useDebounce(searchQuery, 200);
+  const [suggestions, setSuggestions] = useState<WordSuggestion[]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  // Selecting a suggestion sets searchQuery, which would otherwise
+  // re-trigger the suggestion-fetch effect below and pop the dropdown back
+  // open (the selected word/meaning matches itself). This suppresses every
+  // firing inside a short window after a selection.
+  const suppressSuggestionsUntilRef = useRef(0);
   const [selectedLevel, setSelectedLevel] = useState("");
   const [selectedTopic, setSelectedTopic] = useState("");
+  const [selectedPartOfSpeechId, setSelectedPartOfSpeechId] = useState<
+    number | null
+  >(null);
+  const [selectedVerbFilter, setSelectedVerbFilter] = useState("");
+  const [selectedPrepositionFilter, setSelectedPrepositionFilter] = useState("");
+  const [selectedAdjectiveFilter, setSelectedAdjectiveFilter] = useState("");
+  const [expandedTypeId, setExpandedTypeId] = useState<number | null>(null);
+  const [recentOnly, setRecentOnly] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [learningMode, setLearningMode] = useState(false);
   const [revealedWords, setRevealedWords] = useState<Set<string>>(new Set());
-  const [levels, setLevels] = useState<any[]>([]);
-  const [topics, setTopics] = useState<any[]>([]);
-  const [filteredTopics, setFilteredTopics] = useState<any[]>([]); // Topics filtered by selected level
+  const [partsOfSpeech, setPartsOfSpeech] = useState<PartOfSpeech[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [showLevelDropdown, setShowLevelDropdown] = useState(false);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
+  const [showTypeDropdown, setShowTypeDropdown] = useState(false);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [selectedWordForModal, setSelectedWordForModal] =
     useState<WordVocab | null>(null);
   const [loadingFavoritesModal, setLoadingFavoritesModal] = useState(false);
+
+  const findPosByName = useCallback(
+    (name: string) =>
+      partsOfSpeech.find((p) => p.name.toLowerCase() === name),
+    [partsOfSpeech],
+  );
+  const verbPos = findPosByName("verb");
+  const prepositionPos = findPosByName("preposition");
+  const adjectivePos = findPosByName("adjective");
 
   // Load favorites from backend when user is available
   useEffect(() => {
@@ -65,10 +133,7 @@ export default function VocabularyScreen() {
           );
           if (loadedUser && loadedUser.id) {
             const favorites = await favoriteService.getFavorites(loadedUser.id);
-            console.log("[Vocabulary] Raw favorites response:", favorites);
-            const favoriteIds = Array.isArray(favorites)
-              ? favorites.map((fav: any) => String(fav.id))
-              : favorites?.data?.map((fav: any) => String(fav.id)) || [];
+            const favoriteIds = favorites.map((fav) => fav.id);
             setFavorites(new Set(favoriteIds));
             console.log(
               "[Vocabulary] Loaded favorites from backend:",
@@ -76,8 +141,9 @@ export default function VocabularyScreen() {
             );
           }
         } catch (error) {
-          console.error(
-            "[Vocabulary] Could not load user from backend:",
+          // Expected for guests browsing without an account — not an error.
+          console.log(
+            "[Vocabulary] No authenticated user (guest browsing):",
             error?.response?.status || error?.message,
           );
           console.log("[Vocabulary] Falling back to local storage");
@@ -105,10 +171,7 @@ export default function VocabularyScreen() {
       // User is in Redux, load their favorites
       try {
         const favorites = await favoriteService.getFavorites(user.id);
-        console.log("[Vocabulary] Raw favorites response:", favorites);
-        const favoriteIds = Array.isArray(favorites)
-          ? favorites.map((fav: any) => String(fav.id))
-          : favorites?.data?.map((fav: any) => String(fav.id)) || [];
+        const favoriteIds = favorites.map((fav) => fav.id);
         setFavorites(new Set(favoriteIds));
         console.log("[Vocabulary] Loaded favorites from backend:", favoriteIds);
       } catch (error) {
@@ -138,312 +201,135 @@ export default function VocabularyScreen() {
     loadFavorites();
   }, [user]);
 
-  // Extract unique levels and topics from ALL words (not paginated)
+  // Part-of-speech options come from a dedicated lookup endpoint — the word
+  // list payload only carries the raw partOfSpeechId, never the name.
   useEffect(() => {
-    if (allWords && allWords.length > 0) {
-      console.log(
-        "[Vocabulary] Processing ALL words for level/topic extraction, count:",
-        allWords.length,
-      );
-      console.log("[Vocabulary] Sample word:", allWords[0]);
-
-      // CEFR level order
-      const cefrOrder = ["A1", "A2", "B1", "B2", "C1", "C2"];
-
-      // Get unique levels - following React JS pattern
-      const uniqueLevels: any = {};
-      allWords.forEach((w) => {
-        if (
-          w.level &&
-          w.level.level &&
-          w.level.level.trim() &&
-          w.level.level.toLowerCase() !== "unknown" &&
-          w.level.level.toLowerCase() !== "null"
-        ) {
-          const levelValue = w.level.level.trim();
-          if (!uniqueLevels[levelValue]) {
-            uniqueLevels[levelValue] = {
-              id: w.level.id,
-              level: levelValue,
-              name: levelValue, // For display
-            };
-          }
-        }
+    partOfSpeechService
+      .getAll()
+      .then(setPartsOfSpeech)
+      .catch((error) => {
+        console.error("[Vocabulary] Failed to load parts of speech:", error);
       });
+  }, []);
 
-      // Sort levels in CEFR order
-      const levelsList = Object.values(uniqueLevels).sort((a: any, b: any) => {
-        const indexA = cefrOrder.indexOf(a.level);
-        const indexB = cefrOrder.indexOf(b.level);
-
-        // If both are in CEFR order, sort by that
-        if (indexA !== -1 && indexB !== -1) {
-          return indexA - indexB;
-        }
-
-        // Fallback to alphabetical
-        return String(a.level).localeCompare(String(b.level));
-      });
-
-      console.log("[Vocabulary] Unique levels found (sorted):", levelsList);
-      setLevels(levelsList);
-
-      // Get unique topics with level information for proper sorting
-      const uniqueTopics: { [key: string]: any } = {};
-      allWords.forEach((w) => {
-        if (w.topic && w.topic.id) {
-          // Enrich topic with levelId if not already present
-          if (!uniqueTopics[w.topic.id]) {
-            uniqueTopics[w.topic.id] = {
-              ...w.topic,
-              levelId: w.level?.id, // Store the level ID for sorting
-            };
-          }
-        }
-      });
-
-      // Create map for sorting: levelId -> level object
-      const levelIdToLevelMap = new Map(
-        levelsList.map((level: any) => [level.id, level]),
-      );
-
-      // Sort topics by levelId, then by ID
-      const topicsList = Object.values(uniqueTopics).sort((a, b) => {
-        const levelA = levelIdToLevelMap.get(a.levelId);
-        const levelB = levelIdToLevelMap.get(b.levelId);
-
-        if (levelA && levelB) {
-          if (levelA.id !== levelB.id) {
-            return levelA.id - levelB.id;
-          }
-        }
-
-        // Sort by topic ID if same level
-        const aId = typeof a.id === "string" ? parseInt(a.id, 10) : a.id;
-        const bId = typeof b.id === "string" ? parseInt(b.id, 10) : b.id;
-        return aId - bId;
-      });
-
-      console.log("[Vocabulary] Unique topics found:", {
-        count: topicsList.length,
-        topics: topicsList,
-      });
-      setTopics(topicsList);
-    }
-  }, [allWords]);
-
-  // Initialize filteredTopics when topics first loaded
+  // Every filter (level/topic/type/search/recent) is applied server-side in
+  // one request. The backend already returns matching levels/topics lookup
+  // lists alongside the page of words, so there's never a need to fetch the
+  // whole word table client-side just to populate dropdowns — that full
+  // scan (up to 10k rows with deep joins) was the actual source of the
+  // "Topic/Type options load with a delay" slowness.
   useEffect(() => {
-    console.log("[Vocabulary] Topics state updated:", {
-      count: topics.length,
-      topics,
-    });
-    if (topics && topics.length > 0) {
-      console.log("[Vocabulary] Initializing filteredTopics with all topics");
-      setFilteredTopics(topics);
-    }
-  }, [topics]);
+    const selectedPartOfSpeechName =
+      selectedPartOfSpeechId !== null
+        ? partsOfSpeech
+            .find((p) => p.id === selectedPartOfSpeechId)
+            ?.name?.toLowerCase()
+        : undefined;
 
-  // Create level-to-topics map and filter topics based on selected level (matching React JS)
-  useEffect(() => {
-    console.log("[Vocabulary] Filter effect triggered:", {
-      levelsCount: levels?.length,
-      topicsCount: topics?.length,
-      selectedLevel,
-    });
-
-    if (!levels || levels.length === 0 || !topics || topics.length === 0)
-      return;
-
-    // Build map of levelId -> Set of topic IDs from topics array (not from words)
-    // This ensures all topics show regardless of pagination
-    const levelToTopicsMap = new Map<number, Set<string | number>>();
-
-    topics.forEach((topic) => {
-      const levelId = topic.levelId;
-      if (levelId) {
-        if (!levelToTopicsMap.has(levelId)) {
-          levelToTopicsMap.set(levelId, new Set());
-        }
-        levelToTopicsMap.get(levelId)!.add(topic.id);
-      }
-    });
-
-    console.log("[Vocabulary] Level-to-topics map created:", levelToTopicsMap);
-
-    // Convert levelId to level value for filtering
-    const levelIdToLevelValueMap = new Map(
-      levels.map((level: any) => [level.id, level.level]),
+    dispatch(
+      fetchWords({
+        limit: WORDS_PER_PAGE,
+        page: currentPage,
+        level: selectedLevel || undefined,
+        topic: selectedTopic || undefined,
+        partOfSpeech: selectedPartOfSpeechName,
+        verbFilter: selectedVerbFilter || undefined,
+        prepositionFilter: selectedPrepositionFilter || undefined,
+        adjectiveFilter: selectedAdjectiveFilter || undefined,
+        recentOnly,
+        search: debouncedSearchQuery.trim() || undefined,
+        searchType,
+      }),
     );
+  }, [
+    dispatch,
+    currentPage,
+    selectedLevel,
+    selectedTopic,
+    selectedPartOfSpeechId,
+    selectedVerbFilter,
+    selectedPrepositionFilter,
+    selectedAdjectiveFilter,
+    recentOnly,
+    debouncedSearchQuery,
+    searchType,
+    partsOfSpeech,
+  ]);
 
-    // Filter topics based on selected level
-    if (selectedLevel === "") {
-      // Show all topics
-      console.log(
-        "[Vocabulary] Selected level is empty, showing all",
-        topics.length,
-        "topics",
-      );
-      setFilteredTopics(topics);
-    } else {
-      // Find the levelId for the selected level
-      const selectedLevelId = levels.find(
-        (l: any) => l.level === selectedLevel,
-      )?.id;
-
-      console.log(
-        "[Vocabulary] Filtering for level:",
-        selectedLevel,
-        "levelId:",
-        selectedLevelId,
-      );
-
-      if (selectedLevelId) {
-        // Show only topics for selected level
-        const topicIdsForLevel =
-          levelToTopicsMap.get(selectedLevelId) || new Set();
-        console.log("[Vocabulary] Topic IDs for this level:", topicIdsForLevel);
-        const matchedTopics = topics.filter((topic) =>
-          topicIdsForLevel.has(topic.id),
-        );
-        console.log(
-          "[Vocabulary] Filtered topics count:",
-          matchedTopics.length,
-        );
-        setFilteredTopics(matchedTopics);
-      }
-    }
-  }, [levels, topics, selectedLevel]);
-
-  // Debug filteredTopics state changes
-  useEffect(() => {
-    console.log("[Vocabulary] filteredTopics state updated:", {
-      count: filteredTopics.length,
-      list: filteredTopics,
-      showTopicDropdown,
-      selectedLevel,
-    });
-  }, [filteredTopics, showTopicDropdown]);
-
-  // Initial fetch
-  useEffect(() => {
-    console.log("[Vocabulary] Fetching words for page:", currentPage);
-    dispatch(fetchWords({ limit: WORDS_PER_PAGE, page: currentPage }));
-  }, [dispatch, currentPage]);
-
-  // Fetch all words once for topic extraction (not paginated)
-  useEffect(() => {
-    if (allWords.length === 0) {
-      console.log("[Vocabulary] Fetching ALL words for topic/level extraction");
-      dispatch(fetchAllWords());
-    }
-  }, [dispatch, allWords]);
-
-  // Filter and sort words (matching React JS filtering logic)
-  const filteredAndSortedWords = useMemo(() => {
-    // Use allWords for filtering to ensure we get all words, not just the current page
-    // The pagination will happen after filtering
-    const wordsToFilter = allWords && allWords.length > 0 ? allWords : words;
-
-    if (!wordsToFilter || wordsToFilter.length === 0) return [];
-
-    let filtered = [...wordsToFilter];
-
-    console.log("[Vocabulary] Starting filter with", filtered.length, "words");
-
-    // Level filter - use word.level?.level (matching React JS)
-    if (selectedLevel) {
-      filtered = filtered.filter((w) => w.level?.level === selectedLevel);
-      console.log("[Vocabulary] After level filter:", filtered.length);
-    }
-
-    // Topic filter
-    if (selectedTopic) {
-      console.log(
-        "[Vocabulary] Filtering by topic:",
-        selectedTopic,
-        "type:",
-        typeof selectedTopic,
-      );
-      filtered = filtered.filter((w) => {
-        const match = String(w.topic?.id) === String(selectedTopic);
-        return match;
-      });
-      console.log("[Vocabulary] After topic filter:", filtered.length);
-    }
-
-    // Search filter
-    const query = searchQuery.trim().toLowerCase();
-    if (query) {
-      filtered = filtered.filter((word) => {
-        if (searchType === "word") {
-          // Check both singular (value) and plural (pluralForm) - matching React JS
-          const singular = String(word.value || "").toLowerCase();
-          const plural = String(word.pluralForm || "").toLowerCase();
-          return singular.includes(query) || plural.includes(query);
-        } else {
-          const meaning = String(word.meaning || "").toLowerCase();
-          return meaning.includes(query);
-        }
-      });
-
-      // Sort by relevance
-      filtered.sort((a, b) => {
-        const getScore = (word: WordVocab) => {
-          const val = searchType === "word" ? word.value : word.meaning;
-          const str = String(val || "").toLowerCase();
-          if (str === query) return 100;
-          if (str.startsWith(query)) return 50;
-          return 10;
-        };
-        return getScore(b) - getScore(a);
-      });
-    } else {
-      // Default alphabetical sort - natural order (matching React JS)
-      // Extract first alphanumeric character for primary sort
-      const getNaturalSortKey = (str: string): [string, string] => {
-        const trimmed = str.trim();
-        // Find first alphanumeric character
-        const alphanumericMatch = trimmed.match(/[a-zA-Z0-9]/);
-        const firstAlphanumeric = alphanumericMatch
-          ? alphanumericMatch[0].toUpperCase()
-          : "\0";
-        return [firstAlphanumeric, trimmed.toLowerCase()];
-      };
-
-      filtered.sort((a, b) => {
-        const aKey = getNaturalSortKey(a.value || "");
-        const bKey = getNaturalSortKey(b.value || "");
-
-        // First compare by first alphanumeric character
-        if (aKey[0] !== bKey[0]) {
-          return aKey[0].localeCompare(bKey[0]);
-        }
-
-        // If same first character, use full word comparison
-        return aKey[1].localeCompare(bKey[1], "de", { numeric: true });
-      });
-    }
-
-    return filtered;
-  }, [allWords, words, selectedLevel, selectedTopic, searchQuery, searchType]);
-
-  // Pagination
-  const totalPages = Math.ceil(filteredAndSortedWords.length / WORDS_PER_PAGE);
-  const paginatedWords = useMemo(() => {
-    const start = (currentPage - 1) * WORDS_PER_PAGE;
-    return filteredAndSortedWords.slice(start, start + WORDS_PER_PAGE);
-  }, [filteredAndSortedWords, currentPage]);
+  const paginatedWords = words;
 
   const handleSearch = useCallback((text: string) => {
     setSearchQuery(text);
     setCurrentPage(1);
   }, []);
 
+  // Fetches "did you mean" suggestions off its own debounce, entirely
+  // decoupled from the table-fetch pipeline above — a failure or slow
+  // response here must never affect the main search. Mirrors web's
+  // suggestion effect (WordList.jsx), including filtering down to only
+  // isFuzzy results: the table itself already shows plain substring
+  // matches live, so a second redundant autocomplete list isn't needed —
+  // only actual typo corrections are worth surfacing.
+  useEffect(() => {
+    const trimmed = debouncedSuggestionQuery.trim();
+
+    if (Date.now() < suppressSuggestionsUntilRef.current) {
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      return;
+    }
+
+    if (trimmed.length < 2) {
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      return;
+    }
+
+    let cancelled = false;
+    wordService
+      .suggestWords(trimmed, searchType, 8)
+      .then((results) => {
+        if (cancelled) return;
+        const fuzzyOnly = results.filter((item) => item.isFuzzy);
+        setSuggestions(fuzzyOnly);
+        setSuggestionsOpen(fuzzyOnly.length > 0);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSuggestions([]);
+        setSuggestionsOpen(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSuggestionQuery, searchType]);
+
+  const selectSuggestion = useCallback(
+    (suggestion: WordSuggestion) => {
+      suppressSuggestionsUntilRef.current = Date.now() + 350;
+      const nextSearchValue =
+        searchType === "meaning" && suggestion.meaning?.[0]
+          ? suggestion.meaning[0]
+          : suggestion.value;
+      setSearchQuery(nextSearchValue);
+      setCurrentPage(1);
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+    },
+    [searchType],
+  );
+
   const handleReset = useCallback(() => {
     setSearchQuery("");
     setSelectedLevel("");
     setSelectedTopic("");
+    setSelectedPartOfSpeechId(null);
+    setSelectedVerbFilter("");
+    setSelectedPrepositionFilter("");
+    setSelectedAdjectiveFilter("");
+    setExpandedTypeId(null);
+    setRecentOnly(false);
     setCurrentPage(1);
   }, []);
 
@@ -559,8 +445,8 @@ export default function VocabularyScreen() {
               syncWithBackend(loadedUser);
             })
             .catch((error) => {
-              console.error(
-                "[toggleFavorite] Could not load user from backend:",
+              console.log(
+                "[toggleFavorite] No authenticated user (guest browsing):",
                 error?.response?.status || error.message,
               );
               console.log(
@@ -623,137 +509,19 @@ export default function VocabularyScreen() {
     item: WordVocab;
     index: number;
   }) => {
-    // Handle article - could be string or object
-    let article = "";
-    if (item.article) {
-      if (typeof item.article === "string") {
-        const trimmed = item.article.trim();
-        article = trimmed || "";
-      } else if (typeof item.article === "object") {
-        // Try common property names for object articles
-        const artObj = item.article as any;
-        article =
-          artObj.name || artObj.value || artObj.article || artObj.text || "";
-      }
-    }
-
-    // Handle level - ensure we get the name
-    let levelName = "—";
-    if (item.level) {
-      if (typeof item.level === "object") {
-        const levelObj = item.level as any;
-        const extracted =
-          levelObj.name ||
-          levelObj.level ||
-          levelObj.value ||
-          levelObj.title ||
-          levelObj.label ||
-          "";
-        levelName = String(extracted).trim() || "—";
-      } else if (typeof item.level === "string") {
-        levelName = String(item.level).trim() || "—";
-      }
-    }
-
-    const value = item.value ? String(item.value).trim() : "";
-    const meaningArray = Array.isArray(item.meaning)
-      ? item.meaning
-      : item.meaning
-        ? [item.meaning]
-        : [];
-    const meaning =
-      meaningArray
-        .map((m) => {
-          if (!m) return "";
-          return String(m).trim();
-        })
-        .filter((m) => m && m.length > 0)
-        .join(", ") || "No meaning";
-    const isRevealed = revealedWords.has(item.id);
     const isFavorite = favorites.has(item.id);
-    const isEvenRow = index % 2 === 0;
 
     return (
-      <TouchableOpacity
-        style={[styles.wordRowTouchable]}
-        onPress={() => openWordModal(item)}
-        activeOpacity={0.7}
-      >
-        <View
-          style={[
-            styles.wordRow,
-            isEvenRow ? styles.wordRowEven : styles.wordRowOdd,
-          ]}
-        >
-          {/* Article */}
-          <View style={styles.colArt}>
-            <Text
-              style={[styles.cellText, styles.articleText]}
-              numberOfLines={1}
-            >
-              {article}
-            </Text>
-          </View>
-
-          {/* Word */}
-          <View style={styles.colWord}>
-            <Text style={[styles.cellText, styles.wordText]} numberOfLines={1}>
-              {value}
-            </Text>
-          </View>
-
-          {/* Meaning */}
-          <View style={styles.colMeaning}>
-            {learningMode ? (
-              <TouchableOpacity
-                onPress={() => toggleReveal(item.id)}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.cellText,
-                    styles.meaningText,
-                    { color: isRevealed ? "#00BCD4" : "#AAA" },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {isRevealed ? meaning : "Click to reveal"}
-                </Text>
-              </TouchableOpacity>
-            ) : (
-              <Text
-                style={[styles.cellText, styles.meaningText]}
-                numberOfLines={1}
-              >
-                {meaning}
-              </Text>
-            )}
-          </View>
-
-          {/* Level */}
-          <View style={styles.colLevel}>
-            <Text
-              style={[styles.cellText, styles.levelText, { fontSize: 11 }]}
-              numberOfLines={1}
-            >
-              {levelName}
-            </Text>
-          </View>
-
-          {/* Favorite */}
-          <TouchableOpacity
-            style={styles.colAction}
-            onPress={() => toggleFavorite(item.id)}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons
-              name={isFavorite ? "heart" : "heart-outline"}
-              size={18}
-              color={isFavorite ? "#FF6B6B" : "#CCC"}
-            />
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
+      <WordTableRow
+        word={item}
+        index={index}
+        isFavorite={isFavorite}
+        onToggleFavorite={toggleFavorite}
+        onPressWord={openWordModal}
+        learningMode={learningMode}
+        isRevealed={revealedWords.has(item.id)}
+        onRevealToggle={toggleReveal}
+      />
     );
   };
 
@@ -763,7 +531,9 @@ export default function VocabularyScreen() {
         style={styles.scrollContainer}
         showsVerticalScrollIndicator={true}
       >
-        {/* Header */}
+        {/* Header — Vocabulary is a bottom tab (not a pushed screen), so
+            there's no back button here; just centered to match every other
+            screen's title style/position. */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>📚 Vocabulary</Text>
           <Text style={styles.headerSubtitle}>
@@ -819,7 +589,7 @@ export default function VocabularyScreen() {
           <MaterialCommunityIcons
             name="magnify"
             size={20}
-            color="#666"
+            color={iconMuted}
             style={{ marginRight: 8 }}
           />
           <TextInput
@@ -831,16 +601,43 @@ export default function VocabularyScreen() {
           />
           {searchQuery.length > 0 && (
             <TouchableOpacity onPress={() => handleSearch("")}>
-              <MaterialCommunityIcons name="close" size={20} color="#666" />
+              <MaterialCommunityIcons name="close" size={20} color={iconMuted} />
             </TouchableOpacity>
           )}
         </View>
+
+        {/* "Did you mean" typo suggestions */}
+        {suggestionsOpen && suggestions.length > 0 && (
+          <View style={styles.suggestionsBox}>
+            {suggestions.map((suggestion) => {
+              const suggestedText =
+                searchType === "meaning" && suggestion.meaning?.[0]
+                  ? suggestion.meaning[0]
+                  : suggestion.value;
+              return (
+                <TouchableOpacity
+                  key={suggestion.id}
+                  style={styles.suggestionItem}
+                  onPress={() => selectSuggestion(suggestion)}
+                  activeOpacity={0.6}
+                >
+                  <Text style={styles.suggestionText}>
+                    Did you mean{" "}
+                    <Text style={styles.suggestionTextHighlight}>
+                      {suggestedText}
+                    </Text>
+                    ?
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
 
         {/* Filters */}
         <View style={styles.filtersContainer}>
           {/* Level Filter */}
           <View style={styles.filterItem}>
-            <Text style={styles.filterLabel}>Level:</Text>
             <TouchableOpacity
               style={styles.dropdownButton}
               onPress={() => setShowLevelDropdown(!showLevelDropdown)}
@@ -851,7 +648,7 @@ export default function VocabularyScreen() {
               <MaterialCommunityIcons
                 name={showLevelDropdown ? "chevron-up" : "chevron-down"}
                 size={20}
-                color="#666"
+                color={iconMuted}
               />
             </TouchableOpacity>
             {showLevelDropdown && (
@@ -915,36 +712,21 @@ export default function VocabularyScreen() {
           </View>
 
           {/* Topic Filter */}
-          {topics.length > 0 && (
-            <View style={styles.filterItem}>
-              <Text style={styles.filterLabel}>Topic:</Text>
+          <View style={styles.filterItem}>
               <TouchableOpacity
                 style={styles.dropdownButton}
-                onPress={() => {
-                  const newState = !showTopicDropdown;
-                  console.log(
-                    "[Vocabulary] Topic dropdown toggled:",
-                    newState,
-                    {
-                      filteredTopicsCount: filteredTopics.length,
-                      filteredTopics,
-                    },
-                  );
-                  setShowTopicDropdown(newState);
-                }}
+                onPress={() => setShowTopicDropdown(!showTopicDropdown)}
               >
                 <Text style={styles.dropdownButtonText}>
-                  {selectedTopic
-                    ? topics.find((t) => t.id === selectedTopic)?.name ||
-                      "Select Topic"
-                    : selectedLevel
+                  {selectedTopic ||
+                    (selectedLevel
                       ? `Topics for ${selectedLevel}`
-                      : "All Topics"}
+                      : "All Topics")}
                 </Text>
                 <MaterialCommunityIcons
                   name={showTopicDropdown ? "chevron-up" : "chevron-down"}
                   size={20}
-                  color="#666"
+                  color={iconMuted}
                 />
               </TouchableOpacity>
               {showTopicDropdown && (
@@ -972,13 +754,13 @@ export default function VocabularyScreen() {
                         : "All Topics"}
                     </Text>
                   </TouchableOpacity>
-                  {filteredTopics.length > 0 ? (
-                    filteredTopics.map((topic) => (
+                  {topics.length > 0 ? (
+                    topics.map((topic) => (
                       <TouchableOpacity
                         key={String(topic.id)}
                         style={styles.dropdownOption}
                         onPress={() => {
-                          setSelectedTopic(topic.id);
+                          setSelectedTopic(topic.name);
                           setShowTopicDropdown(false);
                           setCurrentPage(1);
                         }}
@@ -986,7 +768,7 @@ export default function VocabularyScreen() {
                         <Text
                           style={[
                             styles.dropdownOptionText,
-                            selectedTopic === topic.id &&
+                            selectedTopic === topic.name &&
                               styles.dropdownOptionTextActive,
                           ]}
                         >
@@ -1002,11 +784,203 @@ export default function VocabularyScreen() {
                 </ScrollView>
               )}
             </View>
-          )}
+
+          {/* Type (Part of Speech) Filter */}
+            <View style={styles.filterItem}>
+              <TouchableOpacity
+                style={styles.dropdownButton}
+                onPress={() => setShowTypeDropdown(!showTypeDropdown)}
+              >
+                <Text style={styles.dropdownButtonText}>
+                  {selectedVerbFilter
+                    ? VERB_SUB_FILTERS.find((f) => f.value === selectedVerbFilter)
+                        ?.label || "Verb"
+                    : selectedPrepositionFilter
+                      ? PREPOSITION_SUB_FILTERS.find(
+                          (f) => f.value === selectedPrepositionFilter,
+                        )?.label || "Preposition"
+                      : selectedAdjectiveFilter
+                        ? ADJECTIVE_SUB_FILTERS.find(
+                            (f) => f.value === selectedAdjectiveFilter,
+                          )?.label || "Adjective"
+                        : selectedPartOfSpeechId !== null
+                          ? partsOfSpeech.find(
+                              (p) => p.id === selectedPartOfSpeechId,
+                            )?.name || "All Types"
+                          : "All Types"}
+                </Text>
+                <MaterialCommunityIcons
+                  name={showTypeDropdown ? "chevron-up" : "chevron-down"}
+                  size={20}
+                  color={iconMuted}
+                />
+              </TouchableOpacity>
+              {showTypeDropdown && (
+                <ScrollView
+                  style={styles.dropdownList}
+                  scrollEnabled={true}
+                  nestedScrollEnabled={true}
+                >
+                  <TouchableOpacity
+                    style={styles.dropdownOption}
+                    onPress={() => {
+                      setSelectedPartOfSpeechId(null);
+                      setSelectedVerbFilter("");
+                      setSelectedPrepositionFilter("");
+                      setSelectedAdjectiveFilter("");
+                      setExpandedTypeId(null);
+                      setShowTypeDropdown(false);
+                      setCurrentPage(1);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.dropdownOptionText,
+                        selectedPartOfSpeechId === null &&
+                          styles.dropdownOptionTextActive,
+                      ]}
+                    >
+                      All Types
+                    </Text>
+                  </TouchableOpacity>
+                  {partsOfSpeech.map((pos) => {
+                    const subFilters =
+                      pos.id === verbPos?.id
+                        ? VERB_SUB_FILTERS
+                        : pos.id === prepositionPos?.id
+                          ? PREPOSITION_SUB_FILTERS
+                          : pos.id === adjectivePos?.id
+                            ? ADJECTIVE_SUB_FILTERS
+                            : null;
+                    const isExpanded = expandedTypeId === pos.id;
+                    const activeSubFilterValue =
+                      pos.id === verbPos?.id
+                        ? selectedVerbFilter
+                        : pos.id === prepositionPos?.id
+                          ? selectedPrepositionFilter
+                          : pos.id === adjectivePos?.id
+                            ? selectedAdjectiveFilter
+                            : "";
+                    const isPlainSelected =
+                      selectedPartOfSpeechId === pos.id && !activeSubFilterValue;
+
+                    const selectPlainType = () => {
+                      setSelectedPartOfSpeechId(pos.id);
+                      setSelectedVerbFilter("");
+                      setSelectedPrepositionFilter("");
+                      setSelectedAdjectiveFilter("");
+                      setShowTypeDropdown(false);
+                      setExpandedTypeId(null);
+                      setCurrentPage(1);
+                    };
+
+                    const selectSubFilter = (value: string) => {
+                      setSelectedPartOfSpeechId(pos.id);
+                      setSelectedVerbFilter(
+                        subFilters === VERB_SUB_FILTERS ? value : "",
+                      );
+                      setSelectedPrepositionFilter(
+                        subFilters === PREPOSITION_SUB_FILTERS ? value : "",
+                      );
+                      setSelectedAdjectiveFilter(
+                        subFilters === ADJECTIVE_SUB_FILTERS ? value : "",
+                      );
+                      setShowTypeDropdown(false);
+                      setExpandedTypeId(null);
+                      setCurrentPage(1);
+                    };
+
+                    return (
+                      <View key={pos.id}>
+                        <TouchableOpacity
+                          style={styles.dropdownOption}
+                          onPress={() =>
+                            subFilters
+                              ? setExpandedTypeId(isExpanded ? null : pos.id)
+                              : selectPlainType()
+                          }
+                        >
+                          <View style={styles.dropdownOptionRow}>
+                            <Text
+                              style={[
+                                styles.dropdownOptionText,
+                                isPlainSelected &&
+                                  styles.dropdownOptionTextActive,
+                              ]}
+                            >
+                              {pos.name}
+                            </Text>
+                            {subFilters && (
+                              <MaterialCommunityIcons
+                                name={isExpanded ? "chevron-up" : "chevron-down"}
+                                size={16}
+                                color={iconMuted}
+                              />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+
+                        {subFilters && isExpanded && (
+                          <View style={styles.subFilterContainer}>
+                            <TouchableOpacity
+                              style={styles.subFilterOption}
+                              onPress={selectPlainType}
+                            >
+                              <Text
+                                style={[
+                                  styles.dropdownOptionText,
+                                  isPlainSelected &&
+                                    styles.dropdownOptionTextActive,
+                                ]}
+                              >
+                                All {pos.name}
+                              </Text>
+                            </TouchableOpacity>
+                            {subFilters.map((filter) => {
+                              const isActive =
+                                activeSubFilterValue === filter.value;
+                              return (
+                                <TouchableOpacity
+                                  key={filter.value}
+                                  style={styles.subFilterOption}
+                                  onPress={() => selectSubFilter(filter.value)}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.dropdownOptionText,
+                                      isActive &&
+                                        styles.dropdownOptionTextActive,
+                                    ]}
+                                  >
+                                    {filter.label}
+                                  </Text>
+                                  <Text style={styles.subFilterDescription}>
+                                    {filter.description}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              )}
+            </View>
 
           {/* Action Row */}
           <View style={styles.actionRow}>
-            {(searchQuery || selectedLevel || selectedTopic) && (
+            {Boolean(
+              searchQuery ||
+                selectedLevel ||
+                selectedTopic ||
+                selectedPartOfSpeechId !== null ||
+                selectedVerbFilter ||
+                selectedPrepositionFilter ||
+                selectedAdjectiveFilter ||
+                recentOnly,
+            ) && (
               <TouchableOpacity style={styles.resetBtn} onPress={handleReset}>
                 <MaterialCommunityIcons
                   name="refresh"
@@ -1039,9 +1013,29 @@ export default function VocabularyScreen() {
                 Learn
               </Text>
             </TouchableOpacity>
-            <Text style={styles.wordCountText}>
-              {paginatedWords.length} words
-            </Text>
+            <TouchableOpacity
+              style={[styles.learnBtn, recentOnly && styles.learnBtnActive]}
+              onPress={() => {
+                setRecentOnly(!recentOnly);
+                setCurrentPage(1);
+              }}
+            >
+              <MaterialCommunityIcons
+                name="clock-outline"
+                size={14}
+                color={recentOnly ? "white" : iconMuted}
+                style={{ marginRight: 4 }}
+              />
+              <Text
+                style={[
+                  styles.learnBtnText,
+                  recentOnly && styles.learnBtnTextActive,
+                ]}
+              >
+                Recent
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.wordCountText}>{total} words</Text>
           </View>
         </View>
 
@@ -1097,23 +1091,7 @@ export default function VocabularyScreen() {
         )}
 
         {/* Table Header */}
-        <View style={styles.tableHeader}>
-          <View style={styles.colArt}>
-            <Text style={styles.headerText}>Art.</Text>
-          </View>
-          <View style={styles.colWord}>
-            <Text style={styles.headerText}>Word</Text>
-          </View>
-          <View style={styles.colMeaning}>
-            <Text style={styles.headerText}>Meaning</Text>
-          </View>
-          <View style={styles.colLevel}>
-            <Text style={styles.headerText}>Level</Text>
-          </View>
-          <View style={styles.colAction}>
-            <Text style={styles.headerText}>❤️</Text>
-          </View>
-        </View>
+        <WordTableHeader />
 
         {/* Words List */}
         {isLoading && paginatedWords.length === 0 ? (
@@ -1165,363 +1143,338 @@ export default function VocabularyScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFF",
-  },
+const createStyles = (theme: "light" | "dark") => {
+  const isDark = theme === "dark";
+  const bg = isDark ? "#020617" : "#FFF";
+  const panelBg = isDark ? "#0f172a" : "#F5F5F5";
+  const cardBg = isDark ? "#0f172a" : "#FFF";
+  const border = isDark ? "#1e293b" : "#EEE";
+  const borderSubtle = isDark ? "#1e293b" : "#F0F0F0";
+  const inputBorder = isDark ? "#334155" : "#DDD";
+  const textPrimary = isDark ? "#F1F5F9" : "#333";
+  const textMuted = isDark ? "#94A3B8" : "#666";
+  const rowEven = isDark ? "#0f172a" : "#F8F9FF";
+  const rowOdd = isDark ? "#020617" : "#FFF";
 
-  scrollContainer: {
-    flex: 1,
-  },
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: bg,
+    },
 
-  // Header
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: "#F5F5F5",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#333",
-    marginBottom: 2,
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    color: "#666",
-    lineHeight: 14,
-  },
+    scrollContainer: {
+      flex: 1,
+    },
 
-  // Search Type Row
-  searchTypeRow: {
-    flexDirection: "row",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#F5F5F5",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
-  },
-  typeBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: "#DDD",
-    backgroundColor: "#FFF",
-    alignItems: "center",
-  },
-  typeBtnActive: {
-    backgroundColor: "#FF6B6B",
-    borderColor: "#FF6B6B",
-  },
-  typeBtnText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#666",
-  },
-  typeBtnTextActive: {
-    color: "#FFF",
-  },
+    // Header
+    header: {
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      backgroundColor: panelBg,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+      alignItems: "center",
+    },
+    headerTitle: {
+      fontSize: 17,
+      fontWeight: "700",
+      color: textPrimary,
+      marginBottom: 2,
+      textAlign: "center",
+    },
+    headerSubtitle: {
+      fontSize: 11,
+      color: textMuted,
+      lineHeight: 14,
+      textAlign: "center",
+    },
 
-  // Search Bar
-  searchBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#F5F5F5",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
-  },
-  searchInput: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFF",
-    borderRadius: 6,
-    fontSize: 12,
-    color: "#333",
-    borderWidth: 1,
-    borderColor: "#DDD",
-  },
+    // Search Type Row
+    searchTypeRow: {
+      flexDirection: "row",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: panelBg,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+    },
+    typeBtn: {
+      flex: 1,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      backgroundColor: cardBg,
+      alignItems: "center",
+    },
+    typeBtnActive: {
+      backgroundColor: "#FF6B6B",
+      borderColor: "#FF6B6B",
+    },
+    typeBtnText: {
+      fontSize: 11,
+      fontWeight: "700",
+      color: textMuted,
+    },
+    typeBtnTextActive: {
+      color: "#FFF",
+    },
 
-  // Filters
-  filtersContainer: {
-    backgroundColor: "#FFF",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
-  },
-  filterItem: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-  filterLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#333",
-    marginBottom: 6,
-  },
-  filterValues: {
-    flexGrow: 0,
-  },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#DDD",
-    backgroundColor: "#FFF",
-    marginRight: 6,
-  },
-  filterChipActive: {
-    backgroundColor: "#FF6B6B",
-    borderColor: "#FF6B6B",
-  },
-  filterChipText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#666",
-  },
+    // Search Bar
+    searchBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: panelBg,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+    },
+    searchInput: {
+      flex: 1,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: cardBg,
+      borderRadius: 6,
+      fontSize: 12,
+      color: textPrimary,
+      borderWidth: 1,
+      borderColor: inputBorder,
+    },
 
-  // Dropdown Styles
-  dropdownButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#FFF",
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: "#DDD",
-  },
-  dropdownButtonText: {
-    flex: 1,
-    fontSize: 14,
-    color: "#333",
-    fontWeight: "500",
-  },
-  dropdownList: {
-    backgroundColor: "#FFF",
-    borderWidth: 1,
-    borderColor: "#DDD",
-    borderTopWidth: 0,
-    borderRadius: 0,
-    height: 250,
-    marginTop: -1,
-    zIndex: 10,
-  },
-  dropdownOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-  dropdownOptionText: {
-    fontSize: 14,
-    color: "#666",
-  },
-  dropdownOptionTextActive: {
-    fontWeight: "700",
-    color: "#FF6B6B",
-  },
+    // "Did you mean" suggestions
+    suggestionsBox: {
+      marginHorizontal: 12,
+      marginTop: 4,
+      backgroundColor: cardBg,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      overflow: "hidden",
+    },
+    suggestionItem: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+    },
+    suggestionText: {
+      fontSize: 12,
+      fontStyle: "italic",
+      color: textMuted,
+    },
+    suggestionTextHighlight: {
+      fontWeight: "700",
+      color: "#F59E0B",
+    },
 
-  // Action Row
-  actionRow: {
-    flexDirection: "row",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#EEE",
-  },
-  resetBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-    backgroundColor: "#FF6B6B",
-    marginRight: 4,
-  },
-  resetBtnText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#FFF",
-  },
-  learnBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: "#DDD",
-    backgroundColor: "#FFF",
-    marginRight: 4,
-  },
-  learnBtnActive: {
-    backgroundColor: "#FF6B6B",
-    borderColor: "#FF6B6B",
-  },
-  learnBtnText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#666",
-  },
-  learnBtnTextActive: {
-    color: "#FFF",
-  },
-  wordCountText: {
-    marginLeft: "auto",
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#666",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 3,
-    backgroundColor: "#F0F0F0",
-  },
+    // Filters
+    filtersContainer: {
+      backgroundColor: cardBg,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+    },
+    filterItem: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: borderSubtle,
+    },
+    filterValues: {
+      flexGrow: 0,
+    },
+    filterChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      backgroundColor: cardBg,
+      marginRight: 6,
+    },
+    filterChipActive: {
+      backgroundColor: "#FF6B6B",
+      borderColor: "#FF6B6B",
+    },
+    filterChipText: {
+      fontSize: 11,
+      fontWeight: "600",
+      color: textMuted,
+    },
 
-  // Table Header
-  tableHeader: {
-    flexDirection: "row",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: "#F0F0F0",
-    borderBottomWidth: 2,
-    borderBottomColor: "#FF6B6B",
-    alignItems: "center",
-    gap: 4,
-  },
-  headerText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#333",
-    textTransform: "uppercase",
-  },
+    // Dropdown Styles
+    dropdownButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: cardBg,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: inputBorder,
+    },
+    dropdownButtonText: {
+      flex: 1,
+      fontSize: 14,
+      color: textPrimary,
+      fontWeight: "500",
+    },
+    dropdownList: {
+      backgroundColor: cardBg,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      borderTopWidth: 0,
+      borderRadius: 0,
+      height: 250,
+      marginTop: -1,
+      zIndex: 10,
+    },
+    dropdownOption: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: borderSubtle,
+    },
+    dropdownOptionText: {
+      fontSize: 14,
+      color: textMuted,
+    },
+    dropdownOptionTextActive: {
+      fontWeight: "700",
+      color: "#FF6B6B",
+    },
+    dropdownOptionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    subFilterContainer: {
+      backgroundColor: isDark ? "#1e293b" : "#F5F5F5",
+      paddingLeft: 16,
+    },
+    subFilterOption: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: borderSubtle,
+    },
+    subFilterDescription: {
+      fontSize: 11,
+      color: textMuted,
+      marginTop: 2,
+      fontStyle: "italic",
+    },
 
-  // Column Widths
-  colArt: {
-    width: 40,
-    alignItems: "center",
-    marginRight: 4,
-  },
-  colWord: {
-    width: 65,
-    alignItems: "flex-start",
-    marginRight: 4,
-  },
-  colMeaning: {
-    flex: 1,
-    alignItems: "flex-start",
-    paddingHorizontal: 6,
-    marginRight: 4,
-  },
-  colLevel: {
-    width: 40,
-    alignItems: "center",
-    marginRight: 4,
-  },
-  colAction: {
-    width: 30,
-    alignItems: "center",
-  },
+    // Action Row
+    actionRow: {
+      flexDirection: "row",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      alignItems: "center",
+      borderTopWidth: 1,
+      borderTopColor: border,
+    },
+    resetBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 4,
+      backgroundColor: "#FF6B6B",
+      marginRight: 4,
+    },
+    resetBtnText: {
+      fontSize: 10,
+      fontWeight: "700",
+      color: "#FFF",
+    },
+    learnBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 4,
+      borderWidth: 1,
+      borderColor: inputBorder,
+      backgroundColor: cardBg,
+      marginRight: 4,
+    },
+    learnBtnActive: {
+      backgroundColor: "#FF6B6B",
+      borderColor: "#FF6B6B",
+    },
+    learnBtnText: {
+      fontSize: 10,
+      fontWeight: "700",
+      color: textMuted,
+    },
+    learnBtnTextActive: {
+      color: "#FFF",
+    },
+    wordCountText: {
+      marginLeft: "auto",
+      fontSize: 10,
+      fontWeight: "700",
+      color: textMuted,
+      paddingHorizontal: 6,
+      paddingVertical: 3,
+      borderRadius: 3,
+      backgroundColor: panelBg,
+    },
 
-  // Word Row
-  wordRowTouchable: {
-    width: "100%",
-  },
-  wordRow: {
-    flexDirection: "row",
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
-    alignItems: "center",
-  },
-  wordRowEven: {
-    backgroundColor: "#F8F9FF",
-  },
-  wordRowOdd: {
-    backgroundColor: "#FFF",
-  },
-  cellText: {
-    fontSize: 12,
-    fontWeight: "500",
-  },
-  articleText: {
-    color: "#FF6B6B",
-    fontWeight: "700",
-  },
-  wordText: {
-    color: "#2196F3",
-    fontWeight: "600",
-  },
-  meaningText: {
-    color: "#00BCD4",
-  },
-  levelText: {
-    color: "#666",
-    fontWeight: "600",
-  },
+    // List and Empty States
+    listContent: {
+      flexGrow: 1,
+      minHeight: 200,
+    },
+    emptyContainer: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+    },
+    emptyText: {
+      fontSize: 14,
+      color: textMuted,
+      marginTop: 12,
+    },
+    emptyTextSmall: {
+      fontSize: 10,
+      color: isDark ? "#64748B" : "#BBB",
+      marginTop: 6,
+    },
 
-  // List and Empty States
-  listContent: {
-    flexGrow: 1,
-    minHeight: 200,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  emptyText: {
-    fontSize: 14,
-    color: "#999",
-    marginTop: 12,
-  },
-  emptyTextSmall: {
-    fontSize: 10,
-    color: "#BBB",
-    marginTop: 6,
-  },
-
-  // Pagination
-  pagination: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#EEE",
-    backgroundColor: "#F5F5F5",
-  },
-  pageBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: "#FFF",
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: "#FF6B6B",
-    marginRight: 4,
-  },
-  pageBtnDisabled: {
-    opacity: 0.5,
-    borderColor: "#CCC",
-  },
-  pageInfo: {
-    fontSize: 11,
-    color: "#666",
-    fontWeight: "700",
-  },
-});
+    // Pagination
+    pagination: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderTopWidth: 1,
+      borderTopColor: border,
+      backgroundColor: panelBg,
+    },
+    pageBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      backgroundColor: cardBg,
+      borderRadius: 4,
+      borderWidth: 1,
+      borderColor: "#FF6B6B",
+      marginRight: 4,
+    },
+    pageBtnDisabled: {
+      opacity: 0.5,
+      borderColor: isDark ? "#475569" : "#CCC",
+    },
+    pageInfo: {
+      fontSize: 11,
+      color: textMuted,
+      fontWeight: "700",
+    },
+  });
+};

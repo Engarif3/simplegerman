@@ -4,9 +4,15 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  profileImage?: string;
-  role: "USER" | "PREMIUM" | "SUPER_ADMIN";
-  createdAt: string;
+  profilePhoto?: string | null;
+  avatarId?: string | null;
+  // /auth/me returns this lowercased (e.g. "basic_user"), not the raw enum.
+  role: "basic_user" | "admin" | "super_admin" | string;
+  status?: string;
+  contactNumber?: string | null;
+  // Only ever populated for BASIC_USER — admins have no address column.
+  address?: string | null;
+  createdAt?: string;
 }
 
 export interface LoginCredentials {
@@ -14,8 +20,10 @@ export interface LoginCredentials {
   password: string;
 }
 
-export interface SignUpData extends LoginCredentials {
+export interface SignUpData {
   name: string;
+  email: string;
+  password: string;
 }
 
 export interface AuthResponse {
@@ -25,67 +33,58 @@ export interface AuthResponse {
   user: User;
 }
 
+export interface SignUpResponse {
+  message: string;
+  pending?: boolean;
+}
+
+export interface ForgotPasswordData {
+  email: string;
+}
+
+export interface ResetPasswordData {
+  id: string;
+  token: string;
+  password: string;
+}
+
 class AuthService {
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
-    console.log(
-      "[authService.login] Starting login with email:",
-      credentials.email,
-    );
     const response = await apiClient.post<AuthResponse>(
       "/auth/login",
       credentials,
     );
 
-    console.log("[authService.login] Login response:", response);
-    console.log("[authService.login] Response.token exists:", !!response.token);
-    console.log(
-      "[authService.login] Full response structure:",
-      JSON.stringify(response, null, 2),
-    );
-
     if (response.token) {
-      console.log(
-        "[authService.login] Saving token:",
-        response.token.substring(0, 20) + "...",
-      );
-      await apiClient.setToken(response.token);
-      console.log("[authService.login] ✅ Token saved successfully");
-    } else {
-      console.warn("[authService.login] ❌ No token in response!");
+      await apiClient.setToken(response.token, response.refreshToken);
     }
 
     return response;
   }
 
-  async signUp(data: SignUpData): Promise<AuthResponse> {
-    console.log("[authService.signUp] Starting signup with email:", data.email);
-    const response = await apiClient.post<AuthResponse>("/auth/signup", data);
-
-    console.log("[authService.signUp] SignUp response:", response);
-    console.log(
-      "[authService.signUp] Response.token exists:",
-      !!response.token,
+  // Registration never returns a session token — the account is created as
+  // PENDING and must be email-verified before it can log in, so this must
+  // not call apiClient.setToken().
+  async signUp(data: SignUpData): Promise<SignUpResponse> {
+    const formData = new FormData();
+    formData.append(
+      "data",
+      JSON.stringify({
+        password: data.password,
+        basicUser: { email: data.email, name: data.name },
+      }),
     );
 
-    if (response.token) {
-      console.log(
-        "[authService.signUp] Saving token:",
-        response.token.substring(0, 20) + "...",
-      );
-      await apiClient.setToken(response.token);
-      console.log("[authService.signUp] ✅ Token saved successfully");
-    } else {
-      console.warn("[authService.signUp] ❌ No token in response!");
-    }
-
-    return response;
+    // apiClient's request interceptor detects this FormData body and strips
+    // the default JSON Content-Type so the correct multipart boundary gets
+    // set automatically (by the browser on web, by RN's networking layer
+    // natively) — a manually-set header here can't provide that boundary.
+    return apiClient.post<SignUpResponse>("/user/register-basicUser", formData);
   }
 
   async logout(): Promise<void> {
     try {
       await apiClient.post("/auth/logout", {});
-    } catch (error) {
-      console.error("Logout error:", error);
     } finally {
       await apiClient.clearToken();
     }
@@ -97,11 +96,27 @@ class AuthService {
 
   async isAuthenticated(): Promise<boolean> {
     const token = await apiClient.getToken();
-    console.log("[authService.isAuthenticated] Token check:", {
-      hasToken: !!token,
-      tokenPreview: token ? `${token.substring(0, 20)}...` : "NO TOKEN",
-    });
     return !!token;
+  }
+
+  async verifyEmail(token: string): Promise<{ message: string }> {
+    return apiClient.get<{ message: string }>("/auth/verify-email", {
+      params: { token },
+    });
+  }
+
+  async resendVerification(email: string): Promise<{ message: string }> {
+    return apiClient.post<{ message: string }>("/auth/resend-verification", {
+      email,
+    });
+  }
+
+  async forgotPassword(data: ForgotPasswordData): Promise<{ message: string }> {
+    return apiClient.post<{ message: string }>("/auth/forgot-password", data);
+  }
+
+  async resetPassword(data: ResetPasswordData): Promise<{ message: string }> {
+    return apiClient.post<{ message: string }>("/auth/reset-password", data);
   }
 }
 

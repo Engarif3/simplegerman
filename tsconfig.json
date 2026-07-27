@@ -18,6 +18,7 @@
     "sourceMap": true,
     "noImplicitAny": false,
     "allowSyntheticDefaultImports": true,
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
@@ -30,6 +31,6 @@
       "@types/*": ["src/types/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx"],
+  "include": ["**/*.ts", "**/*.tsx", "nativewind-env.d.ts"],
   "exclude": ["node_modules", "dist", "build"]
 }

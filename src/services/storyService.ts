@@ -19,9 +19,12 @@ export interface Story {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  // The Prisma Level model's field is "level" (e.g. "A1"), not "name" —
+  // this was previously mistyped, which silently broke the level badge
+  // wherever it read currentStory.level?.name.
   level?: {
     id: number;
-    name: string;
+    level: string;
   };
   creator?: {
     id: string;

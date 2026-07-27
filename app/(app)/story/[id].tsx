@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -7,11 +7,25 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Image,
+  Platform,
+  useWindowDimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Speech from "expo-speech";
 import { useAppDispatch, useAppSelector } from "../../../src/hooks/useAppHooks";
 import { fetchStory } from "../../../src/redux/storiesSlice";
+
+const handlePronounce = (word: string) => {
+  if (Platform.OS === "web") {
+    const utterance = new (window as any).SpeechSynthesisUtterance(word);
+    utterance.lang = "de-DE";
+    (window as any).speechSynthesis.cancel();
+    (window as any).speechSynthesis.speak(utterance);
+  } else {
+    Speech.speak(word, { language: "de-DE", pitch: 1.0, rate: 0.8 });
+  }
+};
 
 // Helper function to split text into paragraphs
 const splitIntoParagraphs = (text: string): string[] => {
@@ -86,6 +100,19 @@ export default function StoryDetailScreen() {
   const { currentStory, isLoading, error } = useAppSelector(
     (state) => state.stories,
   );
+  const navigation = useNavigation();
+  const { width: windowWidth } = useWindowDimensions();
+  // Natural height/width ratio of the loaded image — used to size the box
+  // to the image's own aspect ratio (matching web's `w-full` + auto height),
+  // instead of a fixed height that crops every image the same way
+  // regardless of its actual shape.
+  const [imageAspectRatio, setImageAspectRatio] = useState<number | null>(null);
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerShown: false,
+    });
+  }, [navigation]);
 
   useEffect(() => {
     if (id) {
@@ -93,6 +120,16 @@ export default function StoryDetailScreen() {
       dispatch(fetchStory(id as string));
     }
   }, [id, dispatch]);
+
+  useEffect(() => {
+    setImageAspectRatio(null);
+    if (!currentStory?.image) return;
+    Image.getSize(
+      currentStory.image,
+      (width, height) => setImageAspectRatio(height / width),
+      () => setImageAspectRatio(null),
+    );
+  }, [currentStory?.image]);
 
   useEffect(() => {
     if (currentStory) {
@@ -103,7 +140,7 @@ export default function StoryDetailScreen() {
         imageUrl: currentStory.image,
         description: currentStory.description?.substring(0, 50) + "...",
         vocabularyCount: currentStory.vocabulary?.length || 0,
-        levelName: currentStory.level?.name,
+        levelName: currentStory.level?.level,
         creatorName: currentStory.creator?.name,
       });
     }
@@ -145,17 +182,28 @@ export default function StoryDetailScreen() {
       <Text style={styles.title}>{currentStory.title}</Text>
 
       {/* Level Badge */}
-      {currentStory.level?.name && (
+      {Boolean(currentStory.level?.level) && (
         <View style={styles.levelBadge}>
-          <Text style={styles.levelText}>{currentStory.level.name}</Text>
+          <Text style={styles.levelText}>{currentStory.level.level}</Text>
         </View>
       )}
 
-      {/* Story Image */}
-      {currentStory.image && (
+      {/* Story Image — sized to the image's own aspect ratio (capped at
+          420, matching web's `w-full` + `max-height:420` + `object-cover`)
+          instead of a fixed height that cropped every image regardless of
+          its actual shape. */}
+      {Boolean(currentStory.image) && (
         <Image
           source={{ uri: currentStory.image }}
-          style={styles.storyImage}
+          style={[
+            styles.storyImage,
+            {
+              height: imageAspectRatio
+                ? Math.min(420, (windowWidth - 32) * imageAspectRatio)
+                : 220,
+            },
+          ]}
+          resizeMode="cover"
           onLoadStart={() =>
             console.log("[StoryImage] Loading:", currentStory.image)
           }
@@ -177,31 +225,40 @@ export default function StoryDetailScreen() {
         </View>
       )}
 
-      {/* Vocabulary Section - Show passageVocabulary or vocabulary */}
-      {currentStory.passageVocabulary?.length ||
-      currentStory.vocabulary?.length ? (
+      {/* Vocabulary Section — matches web's StoryDetail.jsx: only
+          story.vocabulary is shown there (passageVocabulary is a separate,
+          unused-on-this-screen field), each row is a speaker button + word
+          + arrow + meaning. */}
+      {Boolean(currentStory.vocabulary?.length) && (
         <View style={styles.vocabSection}>
           <Text style={styles.vocabTitle}>Vocabulary</Text>
           <View style={styles.vocabList}>
-            {(currentStory.passageVocabulary?.length
-              ? currentStory.passageVocabulary
-              : currentStory.vocabulary
-            ).map((vocab, index) => (
+            {currentStory.vocabulary.map((vocab, index) => (
               <View key={index} style={styles.vocabItem}>
+                <TouchableOpacity
+                  style={styles.vocabSpeaker}
+                  onPress={() => handlePronounce(vocab.word)}
+                  activeOpacity={0.6}
+                >
+                  <Text style={styles.vocabSpeakerEmoji}>🔊</Text>
+                </TouchableOpacity>
                 <Text style={styles.vocabWord}>{vocab.word}</Text>
-                <Text style={styles.vocabMeaning}>→ {vocab.meaning}</Text>
+                <Text style={styles.vocabMeaning}>
+                  <Text style={styles.vocabArrow}> → </Text>
+                  {vocab.meaning}
+                </Text>
               </View>
             ))}
           </View>
         </View>
-      ) : null}
+      )}
 
       {/* Metadata */}
       <View style={styles.metadata}>
-        {currentStory.creator?.name && (
+        {Boolean(currentStory.creator?.name) && (
           <Text style={styles.metaText}>By: {currentStory.creator.name}</Text>
         )}
-        {currentStory.createdAt && (
+        {Boolean(currentStory.createdAt) && (
           <Text style={styles.metaText}>
             Created: {new Date(currentStory.createdAt).toLocaleDateString()}
           </Text>
@@ -271,10 +328,8 @@ const styles = StyleSheet.create({
   },
   storyImage: {
     width: "100%",
-    height: 250,
     borderRadius: 12,
     marginBottom: 20,
-    resizeMode: "cover",
   },
   descriptionContainer: {
     backgroundColor: "#F9F9F9",
@@ -306,22 +361,37 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   vocabItem: {
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: "#F9F9F9",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: "#FF6B6B",
+    borderRadius: 12,
+    gap: 10,
   },
+  vocabSpeaker: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  vocabSpeakerEmoji: { fontSize: 18 },
   vocabWord: {
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
     color: "#2196F3",
-    marginBottom: 4,
   },
   vocabMeaning: {
+    flex: 1,
     fontSize: 13,
     color: "#666666",
+  },
+  vocabArrow: {
+    color: "#F97316",
+    fontWeight: "700",
   },
   metadata: {
     marginBottom: 24,

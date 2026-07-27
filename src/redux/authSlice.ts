@@ -4,14 +4,9 @@ import {
   User,
   LoginCredentials,
   SignUpData,
+  AuthResponse,
+  SignUpResponse,
 } from "../services/authService";
-
-export interface AuthResponse {
-  user: User;
-  token: string;
-  refreshToken?: string;
-  needPasswordChange?: boolean;
-}
 
 export interface AuthState {
   user: User | null;
@@ -19,6 +14,7 @@ export interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
+  registrationMessage: string | null;
 }
 
 const initialState: AuthState = {
@@ -27,31 +23,37 @@ const initialState: AuthState = {
   isAuthenticated: false,
   isLoading: false,
   error: null,
+  registrationMessage: null,
 };
 
 export const login = createAsyncThunk<
   AuthResponse,
   LoginCredentials,
   { rejectValue: string }
->("auth/login", async (credentials: LoginCredentials, { rejectWithValue }) => {
+>("auth/login", async (credentials, { rejectWithValue }) => {
   try {
-    const response = await authService.login(credentials);
-    return response;
+    return await authService.login(credentials);
   } catch (error: any) {
-    return rejectWithValue(error.message || "Login failed");
+    return rejectWithValue(
+      error.response?.data?.message || error.message || "Login failed",
+    );
   }
 });
 
+// Registration never authenticates the caller — the new account is PENDING
+// until the user verifies their email — so this only surfaces a message,
+// it does not populate `user`/`token`/`isAuthenticated`.
 export const signUp = createAsyncThunk<
-  AuthResponse,
+  SignUpResponse,
   SignUpData,
   { rejectValue: string }
->("auth/signUp", async (data: SignUpData, { rejectWithValue }) => {
+>("auth/signUp", async (data, { rejectWithValue }) => {
   try {
-    const response = await authService.signUp(data);
-    return response;
+    return await authService.signUp(data);
   } catch (error: any) {
-    return rejectWithValue(error.message || "Sign up failed");
+    return rejectWithValue(
+      error.response?.data?.message || error.message || "Sign up failed",
+    );
   }
 });
 
@@ -67,12 +69,42 @@ export const logout = createAsyncThunk<null, void, { rejectValue: string }>(
   },
 );
 
+export const restoreSession = createAsyncThunk<User | null, void>(
+  "auth/restoreSession",
+  async () => {
+    const hasToken = await authService.isAuthenticated();
+    if (!hasToken) return null;
+
+    try {
+      const user = await authService.getCurrentUser();
+      console.log("[restoreSession] GET /auth/me returned:", user);
+      return user;
+    } catch (error: any) {
+      console.log("[restoreSession] GET /auth/me failed:", {
+        status: error?.response?.status,
+        data: error?.response?.data,
+        message: error?.message,
+      });
+      return null;
+    }
+  },
+);
+
 const authSlice = createSlice({
   name: "auth",
   initialState,
   reducers: {
     clearError: (state) => {
       state.error = null;
+    },
+    clearRegistrationMessage: (state) => {
+      state.registrationMessage = null;
+    },
+    // Applies a profile-update response directly instead of a second
+    // round-trip through restoreSession()/GET /auth/me — one less place
+    // for the freshly-saved fields to go missing or race.
+    setUser: (state, action: PayloadAction<User>) => {
+      state.user = action.payload;
     },
   },
   extraReducers: (builder) => {
@@ -91,33 +123,27 @@ const authSlice = createSlice({
     );
     builder.addCase(login.rejected, (state, action) => {
       state.isLoading = false;
-      state.error = (action.payload as string) || "Login failed";
+      state.error = action.payload || "Login failed";
       state.isAuthenticated = false;
     });
 
     builder.addCase(signUp.pending, (state) => {
       state.isLoading = true;
       state.error = null;
+      state.registrationMessage = null;
     });
     builder.addCase(
       signUp.fulfilled,
-      (state, action: PayloadAction<AuthResponse>) => {
+      (state, action: PayloadAction<SignUpResponse>) => {
         state.isLoading = false;
-        state.user = action.payload.user;
-        state.token = action.payload.token;
-        state.isAuthenticated = true;
+        state.registrationMessage = action.payload.message;
       },
     );
     builder.addCase(signUp.rejected, (state, action) => {
       state.isLoading = false;
-      state.error = (action.payload as string) || "Sign up failed";
-      state.isAuthenticated = false;
+      state.error = action.payload || "Sign up failed";
     });
 
-    builder.addCase(logout.pending, (state) => {
-      state.isLoading = true;
-      state.error = null;
-    });
     builder.addCase(logout.fulfilled, (state) => {
       state.user = null;
       state.token = null;
@@ -125,12 +151,29 @@ const authSlice = createSlice({
       state.error = null;
       state.isLoading = false;
     });
-    builder.addCase(logout.rejected, (state, action) => {
+
+    builder.addCase(restoreSession.pending, (state) => {
+      state.isLoading = true;
+    });
+    builder.addCase(
+      restoreSession.fulfilled,
+      (state, action: PayloadAction<User | null>) => {
+        state.isLoading = false;
+        if (action.payload) {
+          state.user = action.payload;
+          state.isAuthenticated = true;
+        } else {
+          state.user = null;
+          state.isAuthenticated = false;
+        }
+      },
+    );
+    builder.addCase(restoreSession.rejected, (state) => {
       state.isLoading = false;
-      state.error = (action.payload as string) || "Logout failed";
+      state.isAuthenticated = false;
     });
   },
 });
 
-export const { clearError } = authSlice.actions;
+export const { clearError, clearRegistrationMessage, setUser } = authSlice.actions;
 export default authSlice.reducer;

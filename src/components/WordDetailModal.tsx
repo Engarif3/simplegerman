@@ -12,6 +12,10 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Speech from "expo-speech";
 import type { WordVocab } from "../services/wordService";
+import { useTheme } from "../context/ThemeContext";
+import { translateService } from "../services/translateService";
+import { renderWordWithPrefix } from "../utils/wordPrefixHighlight";
+import { highlightPrefixInSentence } from "../utils/sentencePrefixHighlighter";
 
 interface WordDetailModalProps {
   visible: boolean;
@@ -59,6 +63,33 @@ export default function WordDetailModal({
   loadingFavorite = false,
 }: WordDetailModalProps) {
   const [playingIndex, setPlayingIndex] = useState<number | null>(null);
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [loadingTranslations, setLoadingTranslations] = useState<
+    Record<string, boolean>
+  >({});
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  const translateSentence = useCallback(
+    async (sentence: string) => {
+      if (translations[sentence] || loadingTranslations[sentence]) return;
+
+      setLoadingTranslations((prev) => ({ ...prev, [sentence]: true }));
+      try {
+        const result = await translateService.translate(sentence, "de", "en");
+        setTranslations((prev) => ({ ...prev, [sentence]: result.translated }));
+      } catch {
+        setTranslations((prev) => ({
+          ...prev,
+          [sentence]: "Translation unavailable",
+        }));
+      } finally {
+        setLoadingTranslations((prev) => ({ ...prev, [sentence]: false }));
+      }
+    },
+    [translations, loadingTranslations],
+  );
 
   // Pronunciation handler - MUST be before early return
   const handlePronounce = useCallback((text: string, index?: number) => {
@@ -202,7 +233,7 @@ export default function WordDetailModal({
             <MaterialCommunityIcons
               name="chevron-left"
               size={28}
-              color="#333"
+              color={isDark ? "#F1F5F9" : "#333"}
             />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Word Details</Text>
@@ -241,10 +272,10 @@ export default function WordDetailModal({
           <View style={styles.wordSection}>
             <View style={styles.wordHeader}>
               <View style={styles.wordTitleContainer}>
-                {articleName && (
+                {Boolean(articleName) && (
                   <Text style={styles.article}>{articleName}</Text>
                 )}
-                <Text style={styles.wordTitle}>{String(word.value || "")}</Text>
+                {renderWordWithPrefix(word, styles.wordTitle, styles.wordPrefix)}
               </View>
               <TouchableOpacity
                 style={styles.wordSpeaker}
@@ -264,7 +295,7 @@ export default function WordDetailModal({
             {/* Left Column */}
             <View style={styles.leftColumn}>
               {/* Plural Form */}
-              {word.pluralForm && (
+              {Boolean(word.pluralForm) && (
                 <View style={styles.detailItem}>
                   <Text style={styles.detailLabel}>Plural:</Text>
                   <View style={styles.pluralContent}>
@@ -325,7 +356,7 @@ export default function WordDetailModal({
                   <View style={styles.wordsList}>
                     {synonyms.map((item, idx) => (
                       <View key={idx} style={styles.wordItemRow}>
-                        {item.article && (
+                        {Boolean(item.article) && (
                           <Text style={styles.itemArticle}>{item.article}</Text>
                         )}
                         <Text style={styles.itemValue}>{item.value}</Text>
@@ -342,7 +373,7 @@ export default function WordDetailModal({
                   <View style={styles.wordsList}>
                     {antonyms.map((item, idx) => (
                       <View key={idx} style={styles.wordItemRow}>
-                        {item.article && (
+                        {Boolean(item.article) && (
                           <Text style={styles.itemArticle}>{item.article}</Text>
                         )}
                         <Text style={styles.itemValue}>{item.value}</Text>
@@ -359,7 +390,7 @@ export default function WordDetailModal({
                   <View style={styles.wordsList}>
                     {similarWords.map((item, idx) => (
                       <View key={idx} style={styles.wordItemRow}>
-                        {item.article && (
+                        {Boolean(item.article) && (
                           <Text style={styles.itemArticle}>{item.article}</Text>
                         )}
                         <Text style={styles.itemValue}>{item.value}</Text>
@@ -377,37 +408,76 @@ export default function WordDetailModal({
                 <View style={styles.sentencesList}>
                   {processedSentences.map((item, idx) => (
                     <View key={idx} style={styles.sentenceItem}>
-                      {/* Speaker button for regular sentences */}
-                      {item.showSpeaker && (
-                        <TouchableOpacity
-                          style={styles.sentenceSpeaker}
-                          onPress={() =>
-                            handlePronounce(item.cleanSentence, idx)
-                          }
-                          activeOpacity={0.6}
-                        >
-                          <Text
-                            style={[
-                              styles.speakerEmojiSmall,
-                              playingIndex === idx && styles.speakerEmojiActive,
-                            ]}
+                      <View style={styles.sentenceRow}>
+                        {/* Speaker button for regular sentences */}
+                        {item.showSpeaker && (
+                          <TouchableOpacity
+                            style={styles.sentenceSpeaker}
+                            onPress={() =>
+                              handlePronounce(item.cleanSentence, idx)
+                            }
+                            activeOpacity={0.6}
                           >
-                            🔊
-                          </Text>
-                        </TouchableOpacity>
-                      )}
+                            <Text
+                              style={[
+                                styles.speakerEmojiSmall,
+                                playingIndex === idx &&
+                                  styles.speakerEmojiActive,
+                              ]}
+                            >
+                              🔊
+                            </Text>
+                          </TouchableOpacity>
+                        )}
 
-                      {item.isHeading ? (
-                        <Text style={styles.sentenceHeading}>
-                          {item.cleanSentence}
-                        </Text>
-                      ) : item.isDescription ? (
-                        <Text style={styles.sentenceDescription}>
-                          {item.cleanSentence}
-                        </Text>
-                      ) : (
-                        <Text style={styles.sentenceText}>
-                          {item.cleanSentence}
+                        {item.isHeading ? (
+                          <Text style={styles.sentenceHeading}>
+                            {item.cleanSentence}
+                          </Text>
+                        ) : item.isDescription ? (
+                          <Text style={styles.sentenceDescription}>
+                            {item.cleanSentence}
+                          </Text>
+                        ) : (
+                          <Text style={styles.sentenceText}>
+                            {highlightPrefixInSentence(
+                              word,
+                              item.cleanSentence,
+                            ).map((segment, segIdx) =>
+                              segment.highlighted ? (
+                                <Text key={segIdx} style={styles.wordPrefix}>
+                                  {segment.text}
+                                </Text>
+                              ) : (
+                                segment.text
+                              ),
+                            )}
+                          </Text>
+                        )}
+
+                        {item.showSpeaker && (
+                          <TouchableOpacity
+                            style={styles.sentenceTranslate}
+                            onPress={() => translateSentence(item.cleanSentence)}
+                            disabled={loadingTranslations[item.cleanSentence]}
+                            activeOpacity={0.6}
+                          >
+                            {loadingTranslations[item.cleanSentence] ? (
+                              <ActivityIndicator size="small" color="#0EA5E9" />
+                            ) : (
+                              <MaterialCommunityIcons
+                                name="translate"
+                                size={16}
+                                color="#0EA5E9"
+                              />
+                            )}
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {Boolean(translations[item.cleanSentence]) && (
+                        <Text style={styles.translationText}>
+                          ↳ {translations[item.cleanSentence]}
                         </Text>
                       )}
                     </View>
@@ -418,7 +488,7 @@ export default function WordDetailModal({
           </View>
 
           {/* Example */}
-          {word.example && (
+          {Boolean(word.example) && (
             <View style={styles.exampleSection}>
               <Text style={styles.detailLabel}>Example:</Text>
               <Text style={styles.exampleText}>
@@ -444,270 +514,307 @@ export default function WordDetailModal({
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEEEEE",
-    backgroundColor: "#FAFAFA",
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#333333",
-    flex: 1,
-    textAlign: "center",
-    marginHorizontal: 12,
-  },
-  favoriteButton: {
-    padding: 8,
-  },
-  scrollContent: {
-    flex: 1,
-  },
-  topicSection: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "#FFF5E6",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
-    alignItems: "center",
-  },
-  topicLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#FF6B6B",
-    marginBottom: 4,
-  },
-  topicName: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#D97706",
-  },
-  wordSection: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    backgroundColor: "#F9F9F9",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEEEEE",
-  },
-  wordHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 12,
-  },
-  wordTitleContainer: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: 8,
-  },
-  wordSpeaker: {
-    padding: 8,
-  },
-  speakerEmoji: {
-    fontSize: 28,
-  },
-  speakerEmojiSmall: {
-    fontSize: 18,
-    opacity: 0.7,
-  },
-  speakerEmojiActive: {
-    opacity: 1,
-    fontSize: 20,
-  },
-  article: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#FF6B6B",
-  },
-  wordTitle: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#333333",
-    textTransform: "capitalize",
-  },
-  meaning: {
-    fontSize: 14,
-    color: "#555555",
-    lineHeight: 22,
-    fontStyle: "italic",
-  },
-  divider: {
-    height: 1,
-    backgroundColor: "#E0E0E0",
-    marginHorizontal: 16,
-    marginVertical: 16,
-  },
-  detailsContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  leftColumn: {
-    marginBottom: 16,
-  },
-  rightColumn: {
-    backgroundColor: "#F9F9F9",
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-  },
-  detailItem: {
-    marginBottom: 16,
-  },
-  detailLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#333333",
-    marginBottom: 6,
-    textTransform: "uppercase",
-  },
-  pluralContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  pluralArticle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FF6B6B",
-  },
-  pluralWord: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#333333",
-    textTransform: "capitalize",
-  },
-  levelText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#555555",
-    backgroundColor: "#FFF3E0",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 4,
-    overflow: "hidden",
-    alignSelf: "flex-start",
-  },
-  difficultyBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 4,
-    alignSelf: "flex-start",
-  },
-  difficultyBeginner: {
-    backgroundColor: "#E8F5E9",
-  },
-  difficultyIntermediate: {
-    backgroundColor: "#FFF3E0",
-  },
-  difficultyAdvanced: {
-    backgroundColor: "#FFEBEE",
-  },
-  difficultyText: {
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  difficultyBeginnerText: {
-    color: "#2E7D32",
-  },
-  difficultyIntermediateText: {
-    color: "#F57C00",
-  },
-  difficultyAdvancedText: {
-    color: "#C62828",
-  },
-  wordsList: {
-    gap: 6,
-  },
-  wordItemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  itemArticle: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#FF6B6B",
-  },
-  itemValue: {
-    fontSize: 12,
-    color: "#555555",
-  },
-  sentencesTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#333333",
-    marginBottom: 12,
-  },
-  sentencesList: {
-    gap: 8,
-  },
-  sentenceItem: {
-    marginBottom: 4,
-    flexDirection: "row",
-    alignItems: "flex-start",
-  },
-  sentenceSpeaker: {
-    marginRight: 8,
-    marginTop: 2,
-    padding: 4,
-  },
-  sentenceHeading: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#06B6D4",
-    textAlign: "center",
-    textDecorationLine: "underline",
-    marginVertical: 8,
-  },
-  sentenceDescription: {
-    fontSize: 12,
-    color: "#666666",
-    lineHeight: 18,
-  },
-  sentenceText: {
-    fontSize: 13,
-    color: "#555555",
-    lineHeight: 20,
-  },
-  exampleSection: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "#F9F9F9",
-    marginHorizontal: 16,
-    marginBottom: 16,
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: "#FF6B6B",
-  },
-  exampleText: {
-    fontSize: 13,
-    color: "#555555",
-    lineHeight: 20,
-    fontStyle: "italic",
-  },
-  closeButton: {
-    position: "absolute",
-    bottom: 16,
-    right: 16,
-    backgroundColor: "#FFF",
-    borderRadius: 50,
-    padding: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-    elevation: 5,
-  },
-});
+const createStyles = (theme: "light" | "dark") => {
+  const isDark = theme === "dark";
+  const bg = isDark ? "#020617" : "#FFFFFF";
+  const cardBg = isDark ? "#0f172a" : "#F9F9F9";
+  const headerBg = isDark ? "#0f172a" : "#FAFAFA";
+  const border = isDark ? "#1e293b" : "#EEEEEE";
+  const borderSubtle = isDark ? "#1e293b" : "#E0E0E0";
+  const textPrimary = isDark ? "#F1F5F9" : "#333333";
+  const textSecondary = isDark ? "#CBD5E1" : "#555555";
+  const textMuted = isDark ? "#94A3B8" : "#666666";
+
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: bg,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+      backgroundColor: headerBg,
+    },
+    headerTitle: {
+      fontSize: 18,
+      fontWeight: "600",
+      color: textPrimary,
+      flex: 1,
+      textAlign: "center",
+      marginHorizontal: 12,
+    },
+    favoriteButton: {
+      padding: 8,
+    },
+    scrollContent: {
+      flex: 1,
+    },
+    topicSection: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      backgroundColor: isDark ? "#451a03" : "#FFF5E6",
+      borderBottomWidth: 1,
+      borderBottomColor: borderSubtle,
+      alignItems: "center",
+    },
+    topicLabel: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: "#FF6B6B",
+      marginBottom: 4,
+    },
+    topicName: {
+      fontSize: 16,
+      fontWeight: "700",
+      color: isDark ? "#FBBF24" : "#D97706",
+    },
+    wordSection: {
+      paddingHorizontal: 16,
+      paddingVertical: 20,
+      backgroundColor: cardBg,
+      borderBottomWidth: 1,
+      borderBottomColor: border,
+    },
+    wordHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      marginBottom: 12,
+    },
+    wordTitleContainer: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: 8,
+    },
+    wordSpeaker: {
+      padding: 8,
+    },
+    speakerEmoji: {
+      fontSize: 28,
+    },
+    speakerEmojiSmall: {
+      fontSize: 18,
+      opacity: 0.7,
+    },
+    speakerEmojiActive: {
+      opacity: 1,
+      fontSize: 20,
+    },
+    article: {
+      fontSize: 20,
+      fontWeight: "700",
+      color: "#FF6B6B",
+    },
+    wordTitle: {
+      fontSize: 32,
+      fontWeight: "700",
+      color: textPrimary,
+      textTransform: "capitalize",
+    },
+    wordPrefix: {
+      color: "#F97316",
+      fontWeight: "700",
+    },
+    meaning: {
+      fontSize: 14,
+      color: textSecondary,
+      lineHeight: 22,
+      fontStyle: "italic",
+    },
+    divider: {
+      height: 1,
+      backgroundColor: borderSubtle,
+      marginHorizontal: 16,
+      marginVertical: 16,
+    },
+    detailsContainer: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+    },
+    leftColumn: {
+      marginBottom: 16,
+    },
+    rightColumn: {
+      backgroundColor: cardBg,
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 16,
+    },
+    detailItem: {
+      marginBottom: 16,
+    },
+    detailLabel: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: textPrimary,
+      marginBottom: 6,
+      textTransform: "uppercase",
+    },
+    pluralContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    pluralArticle: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: "#FF6B6B",
+    },
+    pluralWord: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: textPrimary,
+      textTransform: "capitalize",
+    },
+    levelText: {
+      fontSize: 13,
+      fontWeight: "600",
+      color: isDark ? "#FDBA74" : "#555555",
+      backgroundColor: isDark ? "#7c2d12" : "#FFF3E0",
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 4,
+      overflow: "hidden",
+      alignSelf: "flex-start",
+    },
+    difficultyBadge: {
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 4,
+      alignSelf: "flex-start",
+    },
+    difficultyBeginner: {
+      backgroundColor: isDark ? "#14532d" : "#E8F5E9",
+    },
+    difficultyIntermediate: {
+      backgroundColor: isDark ? "#7c2d12" : "#FFF3E0",
+    },
+    difficultyAdvanced: {
+      backgroundColor: isDark ? "#7f1d1d" : "#FFEBEE",
+    },
+    difficultyText: {
+      fontSize: 12,
+      fontWeight: "700",
+    },
+    difficultyBeginnerText: {
+      color: isDark ? "#86EFAC" : "#2E7D32",
+    },
+    difficultyIntermediateText: {
+      color: isDark ? "#FDBA74" : "#F57C00",
+    },
+    difficultyAdvancedText: {
+      color: isDark ? "#FCA5A5" : "#C62828",
+    },
+    wordsList: {
+      gap: 6,
+    },
+    wordItemRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    itemArticle: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: "#FF6B6B",
+    },
+    itemValue: {
+      fontSize: 12,
+      color: textSecondary,
+    },
+    sentencesTitle: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: textPrimary,
+      marginBottom: 12,
+    },
+    sentencesList: {
+      gap: 8,
+    },
+    sentenceItem: {
+      marginBottom: 4,
+    },
+    sentenceRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+    },
+    sentenceSpeaker: {
+      marginRight: 8,
+      marginTop: 2,
+      padding: 4,
+    },
+    sentenceTranslate: {
+      marginLeft: 6,
+      marginTop: 2,
+      padding: 4,
+    },
+    translationText: {
+      marginTop: 2,
+      marginLeft: 26,
+      fontSize: 12,
+      fontStyle: "italic",
+      color: isDark ? "#38BDF8" : "#0284C7",
+    },
+    sentenceHeading: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: "#06B6D4",
+      textAlign: "center",
+      textDecorationLine: "underline",
+      marginVertical: 8,
+    },
+    sentenceDescription: {
+      fontSize: 12,
+      color: textMuted,
+      lineHeight: 18,
+    },
+    sentenceText: {
+      fontSize: 13,
+      color: textSecondary,
+      lineHeight: 20,
+    },
+    exampleSection: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      backgroundColor: cardBg,
+      marginHorizontal: 16,
+      marginBottom: 16,
+      borderRadius: 8,
+      borderLeftWidth: 4,
+      borderLeftColor: "#FF6B6B",
+    },
+    exampleText: {
+      fontSize: 13,
+      color: textSecondary,
+      lineHeight: 20,
+      fontStyle: "italic",
+    },
+    closeButton: {
+      position: "absolute",
+      bottom: 16,
+      right: 16,
+      backgroundColor: isDark ? "#1e293b" : "#FFF",
+      borderRadius: 50,
+      padding: 8,
+      ...Platform.select({
+        web: {
+          boxShadow: "0px 2px 3px rgba(0, 0, 0, 0.25)",
+        },
+        default: {
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.25,
+          shadowRadius: 3,
+          elevation: 5,
+        },
+      }),
+    },
+  });
+};

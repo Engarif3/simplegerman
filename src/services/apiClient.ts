@@ -1,16 +1,11 @@
-import axios, {
-  AxiosInstance,
-  AxiosRequestConfig,
-  AxiosError,
-  AxiosResponse,
-} from "axios";
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from "axios";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
+import { router } from "expo-router";
 
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || "http://localhost:5001/api/v1";
 
-// Helper to safely check localStorage availability
 const getLocalStorage = () => {
   try {
     if (typeof localStorage !== "undefined") {
@@ -18,8 +13,8 @@ const getLocalStorage = () => {
       localStorage.removeItem("__test__");
       return localStorage;
     }
-  } catch (e) {
-    console.warn("[ApiClient] localStorage not available:", e);
+  } catch {
+    // localStorage unavailable (native runtime) — SecureStore is used instead.
   }
   return null;
 };
@@ -29,89 +24,80 @@ const hasLocalStorage = getLocalStorage() !== null;
 class ApiClient {
   private client: AxiosInstance;
   private tokenKey = "auth_token";
+  private refreshTokenKey = "auth_refresh_token";
   private memoryToken: string | null = null;
+  private memoryRefreshToken: string | null = null;
+  private refreshInFlight: Promise<string | null> | null = null;
 
   constructor() {
-    console.log("[ApiClient] Initializing with API_BASE_URL:", API_BASE_URL);
-    console.log("[ApiClient] hasLocalStorage:", hasLocalStorage);
-    console.log("[ApiClient] Platform:", Platform.OS);
-
     this.client = axios.create({
       baseURL: API_BASE_URL,
       timeout: 15000,
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
     });
 
-    // Request interceptor
-    this.client.interceptors.request.use(
-      async (config) => {
-        try {
-          const token = await this.getToken();
-          console.log("[ApiClient.request] getToken() returned:", token ? `token exists (${token.length} chars)` : "null");
+    this.client.interceptors.request.use(async (config) => {
+      const token = await this.getToken();
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
 
-          if (token) {
-            config.headers.Authorization = `Bearer ${token}`;
-            console.log(
-              "[ApiClient.request] ✅ Authorization header set for:",
-              config.url,
-            );
-            console.log(
-              "[ApiClient.request] Full token:",
-              token,
-            );
-          } else {
-            console.warn(
-              "[ApiClient.request] ❌ NO TOKEN - Request sent without Authorization for:",
-              config.url,
-            );
-          }
-        } catch (error) {
-          console.error(
-            "[ApiClient.request] Error retrieving token in request interceptor:",
-            error,
-          );
-        }
-        return config;
-      },
-      (error) => Promise.reject(error),
-    );
+      // The instance-level default Content-Type (application/json, set
+      // above) otherwise survives even when a caller passes a FormData
+      // body with `headers: { "Content-Type": undefined }` — axios/browser
+      // fetch only auto-generates the correct multipart boundary if the
+      // header is genuinely absent, not merely set to undefined in some
+      // axios versions. Deleting it here, centrally, is the reliable fix
+      // for every multipart call (profile photo/avatar updates, etc.)
+      // instead of depending on each call site getting a fragile override
+      // right.
+      if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+        delete config.headers["Content-Type"];
+      }
 
-    // Response interceptor
+      return config;
+    });
+
     this.client.interceptors.response.use(
       (response) => response,
       async (error: AxiosError) => {
-        console.error(
-          "[ApiClient] Response error:",
-          error.message,
-          error.response?.status,
-        );
-        if (error.response?.status === 401) {
-          // Clear token on 401
-          this.memoryToken = null;
-          console.log("[ApiClient] Received 401, clearing token");
+        const originalRequest = error.config as
+          | (AxiosRequestConfig & { _retry?: boolean })
+          | undefined;
 
-          if (hasLocalStorage) {
-            try {
-              localStorage.removeItem(this.tokenKey);
-              console.log("[ApiClient] ✅ Cleared from localStorage on 401");
-            } catch (e) {
-              console.warn("[ApiClient] localStorage clear failed on 401:", e);
-            }
+        if (
+          error.response?.status === 401 &&
+          originalRequest &&
+          !originalRequest._retry &&
+          !originalRequest.url?.includes("/auth/refresh-token") &&
+          !originalRequest.url?.includes("/auth/login")
+        ) {
+          // A 401 with no token to begin with just means "not logged in" —
+          // many public screens (vocabulary, home, radio) make optional,
+          // best-effort authenticated calls (e.g. "load my favorites if
+          // I'm signed in") that are expected to 401 for guests. Only a
+          // 401 on a request that WAS carrying a token means the session
+          // actually expired and warrants clearing it + forcing a login.
+          const hadToken = await this.getToken();
+          if (!hadToken) {
+            return Promise.reject(error);
           }
 
-          if (Platform.OS !== "web") {
-            try {
-              if (SecureStore.deleteItemAsync) {
-                await SecureStore.deleteItemAsync(this.tokenKey);
-                console.log("[ApiClient] ✅ Cleared from SecureStore on 401");
-              }
-            } catch (e) {
-              console.warn("[ApiClient] SecureStore clear failed on 401:", e);
-            }
+          originalRequest._retry = true;
+          const newToken = await this.refreshAccessToken();
+
+          if (newToken) {
+            originalRequest.headers = {
+              ...originalRequest.headers,
+              Authorization: `Bearer ${newToken}`,
+            };
+            return this.client.request(originalRequest);
           }
+
+          await this.clearToken();
+          router.replace("/(auth)/login");
         }
+
         return Promise.reject(error);
       },
     );
@@ -120,6 +106,14 @@ class ApiClient {
   async get<T = any>(url: string, config?: AxiosRequestConfig): Promise<T> {
     const response = await this.client.get<{ data: T }>(url, config);
     return response.data.data;
+  }
+
+  // A handful of legacy endpoints (e.g. /part-of-speech) respond with the
+  // raw payload instead of the standard { success, message, data } envelope
+  // every other route uses — this skips the .data unwrap for those.
+  async getRaw<T = any>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    const response = await this.client.get<T>(url, config);
+    return response.data;
   }
 
   async post<T = any>(
@@ -154,121 +148,161 @@ class ApiClient {
     return response.data.data;
   }
 
-  async setToken(token: string): Promise<void> {
-    try {
-      console.log(
-        "[ApiClient.setToken] Saving token:",
-        token.substring(0, 20) + "...",
-      );
-
-      this.memoryToken = token;
-      console.log("[ApiClient.setToken] Token saved to memory");
-
-      if (hasLocalStorage) {
-        try {
-          localStorage.setItem(this.tokenKey, token);
-          console.log("[ApiClient.setToken] ✅ Token saved to localStorage");
-        } catch (e) {
-          console.warn("[ApiClient.setToken] localStorage save failed:", e);
-        }
-      } else {
-        console.log(
-          "[ApiClient.setToken] localStorage not available, relying on memory",
-        );
-      }
-
-      if (Platform.OS !== "web") {
-        try {
-          await SecureStore.setItemAsync(this.tokenKey, token);
-          console.log("[ApiClient.setToken] ✅ Token saved to SecureStore");
-        } catch (e) {
-          console.warn("[ApiClient.setToken] SecureStore save failed:", e);
-        }
-      }
-    } catch (error) {
-      console.error("[ApiClient.setToken] Error storing token:", error);
+  private async refreshAccessToken(): Promise<string | null> {
+    if (this.refreshInFlight) {
+      return this.refreshInFlight;
     }
-  }
-  async getToken(): Promise<string | null> {
-    try {
-      if (this.memoryToken) {
-        console.log(
-          "[ApiClient.getToken] Using memory token:",
-          this.memoryToken.substring(0, 20) + "...",
-        );
-        return this.memoryToken;
-      }
 
-      if (hasLocalStorage) {
-        // Try localStorage first
-        try {
-          const token = localStorage.getItem(this.tokenKey);
-          if (token) {
-            this.memoryToken = token;
-            console.log(
-              "[ApiClient.getToken] ✅ Loaded from localStorage:",
-              token.substring(0, 20) + "...",
-            );
-            return token;
-          } else {
-            console.warn("[ApiClient.getToken] No token in localStorage");
-          }
-        } catch (e) {
-          console.warn("[ApiClient.getToken] localStorage read failed:", e);
+    this.refreshInFlight = (async () => {
+      try {
+        const refreshToken = await this.getRefreshToken();
+        if (!refreshToken) return null;
+
+        const response = await axios.post<{
+          data: { accessToken?: string; token?: string };
+        }>(`${API_BASE_URL}/auth/refresh-token`, { refreshToken });
+
+        const newToken =
+          response.data?.data?.accessToken || response.data?.data?.token || null;
+
+        if (newToken) {
+          await this.setToken(newToken);
         }
-      }
 
-      // On native, try SecureStore
-      if (Platform.OS !== "web") {
-        try {
-          const token = await SecureStore.getItemAsync(this.tokenKey);
-          if (token) {
-            this.memoryToken = token;
-            console.log(
-              "[ApiClient.getToken] ✅ Loaded from SecureStore:",
-              token.substring(0, 20) + "...",
-            );
-            return token;
-          } else {
-            console.warn("[ApiClient.getToken] No token in SecureStore");
-          }
-        } catch (e) {
-          console.warn("[ApiClient.getToken] SecureStore read failed:", e);
-        }
+        return newToken;
+      } catch {
+        return null;
+      } finally {
+        this.refreshInFlight = null;
       }
+    })();
 
-      console.warn(
-        "[ApiClient.getToken] No token found in any storage, returning memory token:",
-        this.memoryToken ? "exists" : "null",
-      );
-      return this.memoryToken;
-    } catch (error) {
-      console.error("[ApiClient.getToken] Unexpected error:", error);
-      return null;
-    }
+    return this.refreshInFlight;
   }
 
-  async clearToken(): Promise<void> {
-    this.memoryToken = null;
-    console.log("[ApiClient.clearToken] Clearing token from all storage");
+  async setToken(token: string, refreshToken?: string): Promise<void> {
+    this.memoryToken = token;
 
     if (hasLocalStorage) {
       try {
-        localStorage.removeItem(this.tokenKey);
-        console.log("[ApiClient.clearToken] ✅ Removed from localStorage");
-      } catch (e) {
-        console.warn("[ApiClient.clearToken] localStorage remove failed:", e);
+        localStorage.setItem(this.tokenKey, token);
+      } catch {
+        // ignore — memory token still set
       }
     }
 
     if (Platform.OS !== "web") {
       try {
-        if (SecureStore.deleteItemAsync) {
-          await SecureStore.deleteItemAsync(this.tokenKey);
-          console.log("[ApiClient.clearToken] ✅ Removed from SecureStore");
+        await SecureStore.setItemAsync(this.tokenKey, token);
+      } catch {
+        // ignore — memory token still set
+      }
+    }
+
+    if (refreshToken) {
+      await this.setRefreshToken(refreshToken);
+    }
+  }
+
+  private async setRefreshToken(refreshToken: string): Promise<void> {
+    this.memoryRefreshToken = refreshToken;
+
+    if (hasLocalStorage) {
+      try {
+        localStorage.setItem(this.refreshTokenKey, refreshToken);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (Platform.OS !== "web") {
+      try {
+        await SecureStore.setItemAsync(this.refreshTokenKey, refreshToken);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  async getToken(): Promise<string | null> {
+    if (this.memoryToken) return this.memoryToken;
+
+    if (hasLocalStorage) {
+      try {
+        const token = localStorage.getItem(this.tokenKey);
+        if (token) {
+          this.memoryToken = token;
+          return token;
         }
-      } catch (e) {
-        console.warn("[ApiClient.clearToken] SecureStore remove failed:", e);
+      } catch {
+        // fall through to SecureStore
+      }
+    }
+
+    if (Platform.OS !== "web") {
+      try {
+        const token = await SecureStore.getItemAsync(this.tokenKey);
+        if (token) {
+          this.memoryToken = token;
+          return token;
+        }
+      } catch {
+        // no token available
+      }
+    }
+
+    return this.memoryToken;
+  }
+
+  private async getRefreshToken(): Promise<string | null> {
+    if (this.memoryRefreshToken) return this.memoryRefreshToken;
+
+    if (hasLocalStorage) {
+      try {
+        const token = localStorage.getItem(this.refreshTokenKey);
+        if (token) {
+          this.memoryRefreshToken = token;
+          return token;
+        }
+      } catch {
+        // fall through to SecureStore
+      }
+    }
+
+    if (Platform.OS !== "web") {
+      try {
+        const token = await SecureStore.getItemAsync(this.refreshTokenKey);
+        if (token) {
+          this.memoryRefreshToken = token;
+          return token;
+        }
+      } catch {
+        // no refresh token available
+      }
+    }
+
+    return this.memoryRefreshToken;
+  }
+
+  async clearToken(): Promise<void> {
+    this.memoryToken = null;
+    this.memoryRefreshToken = null;
+
+    if (hasLocalStorage) {
+      try {
+        localStorage.removeItem(this.tokenKey);
+        localStorage.removeItem(this.refreshTokenKey);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (Platform.OS !== "web") {
+      try {
+        await SecureStore.deleteItemAsync(this.tokenKey);
+        await SecureStore.deleteItemAsync(this.refreshTokenKey);
+      } catch {
+        // ignore
       }
     }
   }

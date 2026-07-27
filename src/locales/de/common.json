@@ -1,0 +1,17 @@
+{
+  "navbar": {
+    "home": "Startseite",
+    "vocabulary": "Vokabeln",
+    "radio": "Radio",
+    "dashboard": "Dashboard",
+    "favorites": "Favoriten",
+    "login": "Anmelden",
+    "logout": "Abmelden",
+    "profile": "Profil",
+    "language": "Sprache",
+    "german": "Deutsch",
+    "english": "English",
+    "createTopic": "Thema erstellen"
+  },
+  "welcome": "Willkommen!"
+}
