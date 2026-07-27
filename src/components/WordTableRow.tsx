@@ -272,7 +272,7 @@ function WordTableRow({
               {conjugationLoading ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text style={styles.conjugateButtonText}>C</Text>
+                <Text style={styles.conjugateButtonText}>ai</Text>
               )}
             </TouchableOpacity>
           ) : (
