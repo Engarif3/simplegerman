@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Speech from "expo-speech";
 import { useAppDispatch, useAppSelector } from "../../../src/hooks/useAppHooks";
@@ -101,6 +102,7 @@ export default function StoryDetailScreen() {
     (state) => state.stories,
   );
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   // Natural height/width ratio of the loaded image — used to size the box
   // to the image's own aspect ratio (matching web's `w-full` + auto height),
@@ -168,7 +170,7 @@ export default function StoryDetailScreen() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header with back button */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons name="chevron-left" size={28} color="#333" />
         </TouchableOpacity>

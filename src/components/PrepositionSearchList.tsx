@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { useRouter, useNavigation } from "expo-router";
 import { useEffect } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../context/ThemeContext";
 import type { VerbPrepositionEntry, AdjectivePrepositionEntry } from "../data/grammar/types";
@@ -31,6 +32,7 @@ export default function PrepositionSearchList({
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const styles = createStyles(isDark);
+  const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -47,7 +49,7 @@ export default function PrepositionSearchList({
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

@@ -11,10 +11,11 @@ import {
   SectionList,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAppDispatch, useAppSelector } from "../../src/hooks/useAppHooks";
-import { fetchWords } from "../../src/redux/wordsSlice";
+import { fetchWords, hydrateWordsFromCache } from "../../src/redux/wordsSlice";
 import { useDebounce } from "../../src/hooks/useDebounce";
 import { favoriteService } from "../../src/services/favoriteService";
 import { authService } from "../../src/services/authService";
@@ -26,6 +27,7 @@ import {
   wordService,
   type WordVocab,
   type WordSuggestion,
+  type WordListResponse,
 } from "../../src/services/wordService";
 import WordDetailModal from "../../src/components/WordDetailModal";
 import WordTableRow from "../../src/components/WordTableRow";
@@ -66,6 +68,7 @@ export default function VocabularyScreen() {
   const isDark = theme === "dark";
   const styles = useMemo(() => createStyles(theme), [theme]);
   const iconMuted = isDark ? "#94A3B8" : "#666";
+  const insets = useSafeAreaInsets();
 
   // State Management
   const [searchQuery, setSearchQuery] = useState("");
@@ -98,6 +101,13 @@ export default function VocabularyScreen() {
   const [revealedWords, setRevealedWords] = useState<Set<string>>(new Set());
   const [partsOfSpeech, setPartsOfSpeech] = useState<PartOfSpeech[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  // Mirrors `favorites` without being a dependency of toggleFavorite below —
+  // keeps that callback's identity stable across favorite toggles so
+  // WordTableRow's React.memo isn't busted for all 40 rows on every tap.
+  const favoritesRef = useRef(favorites);
+  useEffect(() => {
+    favoritesRef.current = favorites;
+  }, [favorites]);
   const [showLevelDropdown, setShowLevelDropdown] = useState(false);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
@@ -212,24 +222,31 @@ export default function VocabularyScreen() {
       });
   }, []);
 
-  // Every filter (level/topic/type/search/recent) is applied server-side in
-  // one request. The backend already returns matching levels/topics lookup
-  // lists alongside the page of words, so there's never a need to fetch the
-  // whole word table client-side just to populate dropdowns — that full
-  // scan (up to 10k rows with deep joins) was the actual source of the
-  // "Topic/Type options load with a delay" slowness.
-  useEffect(() => {
-    const selectedPartOfSpeechName =
+  // In-memory cache of already-fetched pages, keyed by filters+page — makes
+  // revisiting a page (Next then Previous then Next again) instant instead
+  // of re-hitting the network every time. Paired with the prefetch effect
+  // below, which warms the +1/-1 pages in the background so "Next" is
+  // usually already cached by the time it's tapped. Mirrors web's
+  // WordList.jsx page cache + adjacent-page prefetching, which is the
+  // actual reason it feels faster than a plain per-click fetch.
+  const wordPageCacheRef = useRef(new Map<string, WordListResponse>());
+
+  const selectedPartOfSpeechName = useMemo(
+    () =>
       selectedPartOfSpeechId !== null
         ? partsOfSpeech
             .find((p) => p.id === selectedPartOfSpeechId)
             ?.name?.toLowerCase()
-        : undefined;
+        : undefined,
+    [selectedPartOfSpeechId, partsOfSpeech],
+  );
 
-    dispatch(
-      fetchWords({
-        limit: WORDS_PER_PAGE,
-        page: currentPage,
+  // Everything except `page` — combined with a page number, this is the
+  // cache key. Kept as a stable string so it's cheap to use as both a
+  // dependency and a Map key prefix.
+  const filterKey = useMemo(
+    () =>
+      JSON.stringify({
         level: selectedLevel || undefined,
         topic: selectedTopic || undefined,
         partOfSpeech: selectedPartOfSpeechName,
@@ -240,21 +257,94 @@ export default function VocabularyScreen() {
         search: debouncedSearchQuery.trim() || undefined,
         searchType,
       }),
-    );
-  }, [
-    dispatch,
-    currentPage,
-    selectedLevel,
-    selectedTopic,
-    selectedPartOfSpeechId,
-    selectedVerbFilter,
-    selectedPrepositionFilter,
-    selectedAdjectiveFilter,
-    recentOnly,
-    debouncedSearchQuery,
-    searchType,
-    partsOfSpeech,
-  ]);
+    [
+      selectedLevel,
+      selectedTopic,
+      selectedPartOfSpeechName,
+      selectedVerbFilter,
+      selectedPrepositionFilter,
+      selectedAdjectiveFilter,
+      recentOnly,
+      debouncedSearchQuery,
+      searchType,
+    ],
+  );
+
+  const buildFiltersForPage = useCallback(
+    (page: number) => ({
+      limit: WORDS_PER_PAGE,
+      page,
+      level: selectedLevel || undefined,
+      topic: selectedTopic || undefined,
+      partOfSpeech: selectedPartOfSpeechName,
+      verbFilter: selectedVerbFilter || undefined,
+      prepositionFilter: selectedPrepositionFilter || undefined,
+      adjectiveFilter: selectedAdjectiveFilter || undefined,
+      recentOnly,
+      search: debouncedSearchQuery.trim() || undefined,
+      searchType,
+    }),
+    [
+      selectedLevel,
+      selectedTopic,
+      selectedPartOfSpeechName,
+      selectedVerbFilter,
+      selectedPrepositionFilter,
+      selectedAdjectiveFilter,
+      recentOnly,
+      debouncedSearchQuery,
+      searchType,
+    ],
+  );
+
+  useEffect(() => {
+    const cacheKey = `${filterKey}:${currentPage}`;
+    const cached = wordPageCacheRef.current.get(cacheKey);
+
+    if (cached) {
+      dispatch(hydrateWordsFromCache(cached));
+      return;
+    }
+
+    // Aborts this exact request if another dependency change (e.g. a fast
+    // second tap on "Next") fires before it resolves — without this,
+    // clicking through pages quickly stacks up overlapping in-flight
+    // requests that all eventually complete and each trigger a full
+    // re-render, which is what made repeated fast clicks feel like it kept
+    // getting slower rather than each page load taking the same ~1s.
+    const promise = dispatch(fetchWords(buildFiltersForPage(currentPage)));
+    promise
+      .unwrap()
+      .then((result: WordListResponse) => {
+        wordPageCacheRef.current.set(cacheKey, result);
+      })
+      .catch(() => {});
+    return () => {
+      promise.abort();
+    };
+  }, [dispatch, currentPage, filterKey, buildFiltersForPage]);
+
+  // Warms the cache for the pages either side of the one just shown, so
+  // tapping Next/Previous usually hits the cache above instead of the
+  // network. Runs off the main fetch entirely — never touches isLoading or
+  // the visible word list, so a slow/failed prefetch can't affect what's
+  // on screen.
+  useEffect(() => {
+    if (!totalPages || totalPages <= 1) return;
+
+    [currentPage - 1, currentPage + 1].forEach((page) => {
+      if (page < 1 || page > totalPages) return;
+      const cacheKey = `${filterKey}:${page}`;
+      if (wordPageCacheRef.current.has(cacheKey)) return;
+
+      wordService
+        .getWords(buildFiltersForPage(page))
+        .then((result) => {
+          wordPageCacheRef.current.set(cacheKey, result);
+        })
+        .catch(() => {});
+    });
+  }, [currentPage, filterKey, totalPages, buildFiltersForPage]);
 
   const paginatedWords = words;
 
@@ -335,7 +425,7 @@ export default function VocabularyScreen() {
 
   const toggleFavorite = useCallback(
     (wordId: string) => {
-      const isFavorited = favorites.has(wordId);
+      const isFavorited = favoritesRef.current.has(wordId);
       console.log(
         "[toggleFavorite] Toggling favorite for wordId:",
         wordId,
@@ -418,7 +508,7 @@ export default function VocabularyScreen() {
       };
 
       // Get updated favorites set
-      const updatedFavorites = new Set(favorites);
+      const updatedFavorites = new Set(favoritesRef.current);
       if (updatedFavorites.has(wordId)) {
         updatedFavorites.delete(wordId);
       } else {
@@ -457,7 +547,7 @@ export default function VocabularyScreen() {
         });
       }
     },
-    [favorites, user],
+    [user],
   );
 
   const toggleReveal = useCallback((wordId: string) => {
@@ -502,39 +592,19 @@ export default function VocabularyScreen() {
     [toggleFavorite],
   );
 
-  const renderWordRow = ({
-    item,
-    index,
-  }: {
-    item: WordVocab;
-    index: number;
-  }) => {
-    const isFavorite = favorites.has(item.id);
-
-    return (
-      <WordTableRow
-        word={item}
-        index={index}
-        isFavorite={isFavorite}
-        onToggleFavorite={toggleFavorite}
-        onPressWord={openWordModal}
-        learningMode={learningMode}
-        isRevealed={revealedWords.has(item.id)}
-        onRevealToggle={toggleReveal}
-      />
-    );
-  };
-
-  return (
-    <View style={styles.container}>
-      <ScrollView
-        style={styles.scrollContainer}
-        showsVerticalScrollIndicator={true}
-      >
-        {/* Header — Vocabulary is a bottom tab (not a pushed screen), so
+  // Rendered via FlatList's ListHeaderComponent below (and standalone while
+  // the very first fetch is loading) rather than as a sibling ScrollView's
+  // children — a FlatList nested inside a ScrollView with the same
+  // orientation breaks its windowing/virtualization entirely, and simply
+  // removing the FlatList made every page render all 40 rows synchronously
+  // instead, which was no faster. Making FlatList the single top-level
+  // scrollable element restores real incremental rendering.
+  const listHeader = (
+    <>
+      {/* Header — Vocabulary is a bottom tab (not a pushed screen), so
             there's no back button here; just centered to match every other
             screen's title style/position. */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
           <Text style={styles.headerTitle}>📚 Vocabulary</Text>
           <Text style={styles.headerSubtitle}>
             Master German vocabulary
@@ -1048,7 +1118,7 @@ export default function VocabularyScreen() {
                 currentPage === 1 && styles.pageBtnDisabled,
               ]}
               onPress={() => setCurrentPage(Math.max(1, currentPage - 1))}
-              disabled={currentPage === 1}
+              disabled={currentPage === 1 || isLoading}
             >
               <MaterialCommunityIcons
                 name="chevron-left"
@@ -1071,7 +1141,7 @@ export default function VocabularyScreen() {
               onPress={() =>
                 setCurrentPage(Math.min(totalPages, currentPage + 1))
               }
-              disabled={currentPage >= totalPages}
+              disabled={currentPage >= totalPages || isLoading}
             >
               <Text
                 style={{
@@ -1090,55 +1160,88 @@ export default function VocabularyScreen() {
           </View>
         )}
 
-        {/* Table Header */}
-        <WordTableHeader />
+    </>
+  );
 
-        {/* Words List */}
-        {isLoading && paginatedWords.length === 0 ? (
+  const renderWordRow = ({ item, index }: { item: WordVocab; index: number }) => (
+    <WordTableRow
+      word={item}
+      index={index}
+      isFavorite={favorites.has(item.id)}
+      onToggleFavorite={toggleFavorite}
+      onPressWord={openWordModal}
+      learningMode={learningMode}
+      isRevealed={revealedWords.has(item.id)}
+      onRevealToggle={toggleReveal}
+    />
+  );
+
+  return (
+    <View style={styles.container}>
+      {isLoading && paginatedWords.length === 0 ? (
+        <>
+          {listHeader}
           <View style={styles.emptyContainer}>
             <ActivityIndicator size="large" color="#FF6B6B" />
             <Text style={styles.emptyText}>Loading vocabulary...</Text>
           </View>
-        ) : paginatedWords.length === 0 && !isLoading ? (
-          <View style={styles.emptyContainer}>
-            <MaterialCommunityIcons name="search-web" size={48} color="#CCC" />
-            <Text style={styles.emptyText}>No words found</Text>
-            {!words || words.length === 0 ? (
-              <>
-                <Text style={styles.emptyTextSmall}>
-                  Total words in store: {words?.length || 0}
-                </Text>
-                <Text style={styles.emptyTextSmall}>
-                  Loading status: {isLoading ? "Loading..." : "Completed"}
-                </Text>
-              </>
-            ) : null}
-          </View>
-        ) : (
-          <FlatList
-            data={paginatedWords}
-            renderItem={renderWordRow}
-            keyExtractor={(item) => item.id}
-            scrollEnabled={true}
-            nestedScrollEnabled={true}
-            contentContainerStyle={styles.listContent}
-          />
-        )}
-
-        {/* Word Detail Modal */}
-        <WordDetailModal
-          visible={isModalVisible}
-          word={selectedWordForModal}
-          onClose={closeWordModal}
-          isFavorite={
-            selectedWordForModal
-              ? favorites.has(selectedWordForModal.id)
-              : false
+        </>
+      ) : (
+        // FlatList is now the single top-level scrollable element (search/
+        // filters/pagination live in ListHeaderComponent) instead of being
+        // nested inside a ScrollView — that nesting was what broke
+        // virtualization in the first place. initialNumToRender/windowSize
+        // keep the first paint cheap (a handful of rows) instead of
+        // mounting all 40 synchronously on every page change.
+        <FlatList
+          data={paginatedWords}
+          renderItem={renderWordRow}
+          keyExtractor={(item) => item.id}
+          ListHeaderComponent={
+            <>
+              {listHeader}
+              {/* Table Header */}
+              <WordTableHeader />
+            </>
           }
-          onToggleFavorite={handleToggleFavoriteModal}
-          loadingFavorite={loadingFavoritesModal}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <MaterialCommunityIcons name="search-web" size={48} color="#CCC" />
+              <Text style={styles.emptyText}>No words found</Text>
+              {!words || words.length === 0 ? (
+                <>
+                  <Text style={styles.emptyTextSmall}>
+                    Total words in store: {words?.length || 0}
+                  </Text>
+                  <Text style={styles.emptyTextSmall}>
+                    Loading status: {isLoading ? "Loading..." : "Completed"}
+                  </Text>
+                </>
+              ) : null}
+            </View>
+          }
+          contentContainerStyle={styles.listContent}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={7}
+          removeClippedSubviews
         />
-      </ScrollView>
+      )}
+
+      {/* Word Detail Modal */}
+      <WordDetailModal
+        visible={isModalVisible}
+        word={selectedWordForModal}
+        onClose={closeWordModal}
+        isFavorite={
+          selectedWordForModal
+            ? favorites.has(selectedWordForModal.id)
+            : false
+        }
+        onToggleFavorite={handleToggleFavoriteModal}
+        loadingFavorite={loadingFavoritesModal}
+        isLoggedIn={Boolean(user?.id)}
+      />
     </View>
   );
 }

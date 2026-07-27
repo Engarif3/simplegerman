@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useAppDispatch, useAppSelector } from "../../../src/hooks/useAppHooks";
 import { fetchWord } from "../../../src/redux/wordsSlice";
@@ -21,6 +22,7 @@ export default function WordDetailScreen() {
   const navigation = useNavigation();
   const { theme } = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const insets = useSafeAreaInsets();
   const { currentWord, isLoading, error } = useAppSelector(
     (state) => state.words,
   );
@@ -58,7 +60,7 @@ export default function WordDetailScreen() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Platform,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Speech from "expo-speech";
 import type { WordVocab } from "../services/wordService";
@@ -16,6 +17,8 @@ import { useTheme } from "../context/ThemeContext";
 import { translateService } from "../services/translateService";
 import { renderWordWithPrefix } from "../utils/wordPrefixHighlight";
 import { highlightPrefixInSentence } from "../utils/sentencePrefixHighlighter";
+import { reportService } from "../services/reportService";
+import ReportPanel from "./ReportPanel";
 
 interface WordDetailModalProps {
   visible: boolean;
@@ -24,7 +27,21 @@ interface WordDetailModalProps {
   isFavorite: boolean;
   onToggleFavorite: (wordId: string) => void;
   loadingFavorite?: boolean;
+  isLoggedIn?: boolean;
 }
+
+// A word's `sentences` array mixes real example sentences with "##"/"**"
+// prefixed section headers/notes — only real sentences make sense to flag
+// as "incorrect", but the original array index has to be preserved since
+// that's how the backend addresses a specific sentence. Mirrors web's
+// getReportableSentences in WordReportSection.jsx.
+const getReportableSentences = (sentences: string[] | undefined) =>
+  (sentences || [])
+    .map((text, index) => ({ text, index }))
+    .filter(({ text }) => {
+      const trimmed = text.trim();
+      return !trimmed.startsWith("##") && !trimmed.startsWith("**");
+    });
 
 // Helper function to process sentences
 function processSentence(sentence: string): {
@@ -61,8 +78,10 @@ export default function WordDetailModal({
   isFavorite,
   onToggleFavorite,
   loadingFavorite = false,
+  isLoggedIn = false,
 }: WordDetailModalProps) {
   const [playingIndex, setPlayingIndex] = useState<number | null>(null);
+  const [alreadyReported, setAlreadyReported] = useState(false);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [loadingTranslations, setLoadingTranslations] = useState<
     Record<string, boolean>
@@ -70,6 +89,7 @@ export default function WordDetailModal({
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const insets = useSafeAreaInsets();
 
   const translateSentence = useCallback(
     async (sentence: string) => {
@@ -221,6 +241,31 @@ export default function WordDetailModal({
     });
   }, [word?.similarWords]);
 
+  // Re-check "already reported" whenever a new word opens — mirrors web's
+  // WordReportSection, which always refetches this per-word/user (unlike
+  // reasons/settings, which are cached for the session).
+  useEffect(() => {
+    if (!visible || !word || !isLoggedIn) {
+      setAlreadyReported(false);
+      return;
+    }
+    let cancelled = false;
+    reportService
+      .checkWordAlreadyReported(word.id)
+      .then((result) => {
+        if (!cancelled) setAlreadyReported(result);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, word?.id, isLoggedIn]);
+
+  const reportableSentences = useMemo(
+    () => getReportableSentences(word?.sentences),
+    [word?.sentences],
+  );
+
   // Early return AFTER all hooks
   if (!visible || !word) return null;
 
@@ -228,7 +273,7 @@ export default function WordDetailModal({
     <Modal visible={visible} animationType="slide" transparent={false}>
       <View style={styles.container}>
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <TouchableOpacity onPress={onClose}>
             <MaterialCommunityIcons
               name="chevron-left"
@@ -497,12 +542,36 @@ export default function WordDetailModal({
             </View>
           )}
 
-          {/* Spacing */}
-          <View style={{ height: 30 }} />
+          {isLoggedIn && (
+            <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
+              <ReportPanel
+                key={word.id}
+                triggerLabel="🚩 Report a problem"
+                fetchOptions={reportService.getWordReportOptions}
+                reportableSentences={reportableSentences}
+                alreadyReported={alreadyReported}
+                onSubmit={(reasonIds, message, sentenceIndex) =>
+                  reportService.submitWordReport({
+                    wordId: word.id,
+                    reasonIds,
+                    sentenceIndex,
+                    message: message ?? undefined,
+                  })
+                }
+              />
+            </View>
+          )}
+
+          {/* Spacing — clears both the floating close button and the
+              system nav bar/gesture area, not just a fixed guess. */}
+          <View style={{ height: insets.bottom + 60 }} />
         </ScrollView>
 
         {/* Close Button */}
-        <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+        <TouchableOpacity
+          style={[styles.closeButton, { bottom: insets.bottom + 16 }]}
+          onPress={onClose}
+        >
           <MaterialCommunityIcons
             name="close-circle"
             size={32}

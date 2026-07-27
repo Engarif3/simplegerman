@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../../../src/context/ThemeContext";
 import { useAppSelector } from "../../../src/hooks/useAppHooks";
@@ -48,6 +49,7 @@ export default function ChallengeSessionScreen() {
   const isDark = theme === "dark";
   const styles = createStyles(isDark);
   const levelKey = level as ChallengeLevel;
+  const insets = useSafeAreaInsets();
 
   const [questions, setQuestions] = useState<ChallengeQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -361,7 +363,7 @@ export default function ChallengeSessionScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

@@ -114,7 +114,10 @@ class WordService {
   // a single request — the backend already returns the full levels/topics
   // lookup lists alongside the page of words, so there is no need to ever
   // fetch the entire word table client-side just to populate dropdowns.
-  async getWords(filters: WordListFilters = {}): Promise<WordListResponse> {
+  async getWords(
+    filters: WordListFilters = {},
+    signal?: AbortSignal,
+  ): Promise<WordListResponse> {
     const {
       limit = 40,
       page = 1,
@@ -148,6 +151,7 @@ class WordService {
 
     const response = await apiClient.get<WordListResponse>(
       `/word/all?${params.toString()}`,
+      signal ? { signal } : undefined,
     );
     return { ...response, words: response.words.map(normalizeWordId) };
   }

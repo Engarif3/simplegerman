@@ -1,5 +1,6 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../context/ThemeContext";
@@ -21,9 +22,10 @@ export default function ScreenHeader({ title, onBack, right }: ScreenHeaderProps
   const router = useRouter();
   const { theme } = useTheme();
   const isDark = theme === "dark";
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, { marginTop: Math.max(insets.top, 12) }]}>
       <TouchableOpacity
         onPress={onBack ?? (() => router.back())}
         style={styles.side}

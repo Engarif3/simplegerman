@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { useAppSelector } from "../../../src/hooks/useAppHooks";
@@ -44,6 +45,7 @@ export default function LeaderboardScreen() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const styles = createStyles(isDark);
+  const insets = useSafeAreaInsets();
 
   const initialLevel = (params.level as ChallengeLevel) || "easy";
   const [level, setLevel] = useState<ChallengeLevel>(initialLevel);
@@ -84,7 +86,7 @@ export default function LeaderboardScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

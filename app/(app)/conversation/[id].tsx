@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../../../src/context/ThemeContext";
 import {
@@ -44,6 +45,7 @@ export default function ConversationDetailScreen() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const styles = createStyles(isDark);
+  const insets = useSafeAreaInsets();
 
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,7 +117,7 @@ export default function ConversationDetailScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 10) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

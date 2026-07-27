@@ -236,6 +236,7 @@ export default function FavoritesScreen() {
         loadingFavorite={
           !!selectedWord && favoriteActionId === selectedWord.id
         }
+        isLoggedIn={Boolean(user?.id)}
       />
 
       <ConfirmDialog

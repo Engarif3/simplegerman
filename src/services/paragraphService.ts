@@ -28,7 +28,11 @@ class ParagraphService {
       otherSentences?: string[];
     }>("/api/paragraphs/generate", {
       userId,
-      wordId: word.id,
+      // WordVocab.id is a string everywhere else in this app (routing,
+      // favorites, …), but the AI service's Prisma schema requires a real
+      // Int for its generatedParagraph cache lookup — sending the string
+      // as-is 500s with "Expected Int, provided String".
+      wordId: Number(word.id),
       word: word.value,
       meaning: word.meaning,
       level: getWordLevel(word),

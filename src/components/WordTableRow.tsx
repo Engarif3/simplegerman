@@ -55,7 +55,7 @@ const BADGE_TONE_STYLES: Record<ArticleBadgeTone, { bg: string; text: string }> 
   phrase: { bg: "#000000", text: "#22D3EE" },
 };
 
-export default function WordTableRow({
+function WordTableRow({
   word,
   index,
   isFavorite,
@@ -120,8 +120,14 @@ export default function WordTableRow({
     setAiLoading(true);
     try {
       const result = await paragraphService.generate(word, user?.id);
+      console.log("[WordTableRow] paragraph generate response:", result);
       setAiData(result);
-    } catch {
+    } catch (error: any) {
+      console.error("[WordTableRow] paragraph generate failed:", {
+        status: error?.response?.status,
+        data: error?.response?.data,
+        message: error?.message,
+      });
       setAiData({
         wordId: word.id,
         word: word.value,
@@ -286,6 +292,8 @@ export default function WordTableRow({
 
       <AIParagraphModal
         visible={aiModalOpen}
+        wordId={word.id}
+        userId={user?.id}
         wordValue={word.value}
         article={articleName}
         meaning={meaningText}
@@ -295,6 +303,7 @@ export default function WordTableRow({
 
       <ConjugationModal
         visible={conjugationModalOpen}
+        userId={user?.id}
         verb={word.value}
         meaning={meaningText}
         data={conjugationData}
@@ -439,3 +448,5 @@ const createStyles = (isDark: boolean) => {
     conjugateButtonText: { color: "#FFFFFF", fontSize: 10, fontWeight: "700" },
   });
 };
+
+export default React.memo(WordTableRow);

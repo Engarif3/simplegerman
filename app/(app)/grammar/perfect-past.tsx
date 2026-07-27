@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { useRouter, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../../../src/context/ThemeContext";
 import perfectPastData from "../../../src/data/grammar/perfectAndPastForm.json";
@@ -21,6 +22,7 @@ export default function PerfectAndPastFormScreen() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const styles = createStyles(isDark);
+  const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -44,7 +46,7 @@ export default function PerfectAndPastFormScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <MaterialCommunityIcons
             name="chevron-left"

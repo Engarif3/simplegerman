@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { useTranslation } from "react-i18next";
@@ -171,6 +172,7 @@ export default function HomeScreen() {
   const { theme } = useTheme();
   const { t } = useTranslation();
   const isDark = theme === "dark";
+  const insets = useSafeAreaInsets();
 
   const [streak, setStreak] = useState<number | null>(null);
 
@@ -198,7 +200,7 @@ export default function HomeScreen() {
           "Genie" sky-500) — mobile has no persistent top bar across every
           screen the way web does, so Home (the default landing tab) is
           where the brand actually gets shown while using the app. */}
-      <View style={styles.brandRow}>
+      <View style={[styles.brandRow, { paddingTop: Math.max(insets.top, 20) }]}>
         <Text style={styles.brandSprach}>Sprach</Text>
         <Text style={styles.brandGenie}>Genie</Text>
       </View>
